@@ -607,6 +607,81 @@ async def fee_revenue_series(days: int = 30):
         })
     return {"ok": True, "days": days, "series": series}
 
+# ── Public fee-revenue JSON-LD + OG image (for SEO / social cards) ───────────
+@api_router.get("/yabbai/fee-revenue")
+async def public_fee_revenue():
+    data = await fee_revenue(days=30)
+    return {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "YabbAI Protocol Fee Revenue (30 days)",
+        "description": "Aggregate SOL revenue collected by the YabbAI treasury recovery protocol fee.",
+        "url": "https://yabbai-mainnet-live.preview.emergentagent.com/treasury-recovery",
+        "creator": {"@type": "Organization", "name": "YabbAI-Brain"},
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "variableMeasured": [
+            {"@type": "PropertyValue", "name": "totalSol", "value": data["totalSol"], "unitText": "SOL"},
+            {"@type": "PropertyValue", "name": "totalUsd", "value": data["totalUsd"], "unitText": "USD"},
+            {"@type": "PropertyValue", "name": "solPrice", "value": data["solPrice"], "unitText": "USD"},
+            {"@type": "PropertyValue", "name": "extractions", "value": data["count"]},
+        ],
+        "dateModified": datetime.now(timezone.utc).isoformat(),
+    }
+
+@api_router.get("/yabbai/fee-revenue/og.png")
+async def public_fee_og():
+    from fastapi.responses import Response
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+
+    data = await fee_revenue(days=30)
+    series_resp = await fee_revenue_series(days=30)
+    series = series_resp.get("series", [])
+
+    W, H = 1200, 630
+    img = Image.new("RGB", (W, H), (6, 14, 32))
+    d = ImageDraw.Draw(img)
+
+    # Header glow band
+    for y in range(0, 4):
+        d.line([(0, y), (W, y)], fill=(153, 69, 255), width=1)
+
+    try:
+        big = ImageFont.truetype("DejaVuSans-Bold.ttf", 110)
+        mid = ImageFont.truetype("DejaVuSans-Bold.ttf", 42)
+        small = ImageFont.truetype("DejaVuSans.ttf", 28)
+        tiny = ImageFont.truetype("DejaVuSans.ttf", 22)
+    except Exception:
+        big = mid = small = tiny = ImageFont.load_default()
+
+    d.text((60, 60), "YABBAI", fill=(184, 144, 255), font=mid)
+    d.text((60, 110), "Protocol Fee Revenue · 30 days", fill=(124, 152, 196), font=small)
+
+    d.text((60, 200), f"{data['totalSol']:.4f}", fill=(20, 241, 149), font=big)
+    d.text((60, 340), "SOL  ", fill=(124, 152, 196), font=mid)
+    d.text((220, 348), f"≈ ${data['totalUsd']:,.2f}", fill=(184, 144, 255), font=mid)
+
+    d.text((60, 420), f"{data['count']} extractions · SOL @ ${data['solPrice']:.2f}", fill=(124, 152, 196), font=small)
+
+    # Sparkline strip
+    if series:
+        max_sol = max((p["sol"] for p in series), default=0) or 1
+        x0, y0, w, h = 60, 480, W - 120, 90
+        prev = None
+        for i, p in enumerate(series):
+            x = x0 + int(i * w / max(1, len(series) - 1))
+            y = y0 + h - int((p["sol"] / max_sol) * h)
+            if prev is not None:
+                d.line([prev, (x, y)], fill=(20, 241, 149), width=3)
+            prev = (x, y)
+        d.line([(x0, y0 + h), (x0 + w, y0 + h)], fill=(60, 90, 120), width=1)
+
+    d.text((60, H - 50), "yabbai-mainnet-live · /treasury-recovery", fill=(124, 152, 196), font=tiny)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

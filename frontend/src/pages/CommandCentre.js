@@ -346,22 +346,42 @@ export default function CommandCentre() {
 function FeeRevenueWidget() {
   const [data, setData] = React.useState(null);
   const [series, setSeries] = React.useState([]);
+  const [range, setRange] = React.useState(30);
   React.useEffect(() => {
     const load = () => {
       const base = process.env.REACT_APP_BACKEND_URL;
-      fetch(`${base}/api/fee-revenue?days=30`).then(r => r.json()).then(d => { if (d?.ok) setData(d); }).catch(() => {});
-      fetch(`${base}/api/fee-revenue/series?days=30`).then(r => r.json()).then(d => { if (d?.ok) setSeries(d.series || []); }).catch(() => {});
+      fetch(`${base}/api/fee-revenue?days=${range}`).then(r => r.json()).then(d => { if (d?.ok) setData(d); }).catch(() => {});
+      fetch(`${base}/api/fee-revenue/series?days=${range}`).then(r => r.json()).then(d => { if (d?.ok) setSeries(d.series || []); }).catch(() => {});
     };
     load();
     const id = setInterval(load, 60000);
     return () => clearInterval(id);
-  }, []);
+  }, [range]);
   if (!data) return null;
+  const RANGE_OPTIONS = [7, 30, 90];
   return (
     <div className="card fade-in-3" style={{ marginBottom: 16 }} data-testid="fee-revenue-widget">
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr) auto', gap: 24, alignItems: 'center' }}>
         <div>
-          <p className="section-label" style={{ marginBottom: 6 }}>PROTOCOL FEE — LAST 30 DAYS</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+            <p className="section-label" style={{ margin: 0 }}>PROTOCOL FEE — LAST {range} DAYS</p>
+            <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }} data-testid="fee-range-toggle">
+              {RANGE_OPTIONS.map((r) => (
+                <button key={r} onClick={() => setRange(r)} data-testid={`fee-range-${r}`}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 10,
+                    fontFamily: 'var(--font-mono)',
+                    background: r === range ? 'rgba(20,241,149,0.18)' : 'transparent',
+                    color: r === range ? '#14F195' : '#7c98c4',
+                    border: `1px solid ${r === range ? 'rgba(20,241,149,0.4)' : 'rgba(124,152,196,0.2)'}`,
+                    borderRadius: 4, cursor: 'pointer',
+                  }}>
+                  {r}D
+                </button>
+              ))}
+            </div>
+          </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ fontFamily: 'var(--font-display)', fontSize: 32, fontWeight: 800, color: '#14F195' }} data-testid="fee-total-sol">
               {data.totalSol.toFixed(4)}

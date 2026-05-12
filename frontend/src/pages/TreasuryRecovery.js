@@ -105,6 +105,7 @@ function RecoveryConsole({ token, onLogout }) {
   ] });
   const [useSquads, setUseSquads] = useState(false);
   const [squadsTxB64, setSquadsTxB64] = useState('');
+  const [squadsVault, setSquadsVault] = useState(() => localStorage.getItem('yabbai_squads_vault') || '');
   const [phantomConnected, setPhantomConnected] = useState(false);
   const [phantomKey, setPhantomKey] = useState(null);
   const [txStatus, setTxStatus] = useState('idle');
@@ -449,12 +450,18 @@ function RecoveryConsole({ token, onLogout }) {
             {useSquads && (
               <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 11, color: '#a8b8d0', lineHeight: 1.7 }}>
                 Builds a transaction message that can be uploaded into a Squads vault for multi-signer approval.
-                {feeConfig.squadsVault ? (
+                <input
+                  type="text"
+                  placeholder="Paste your Squads vault address (saved locally)"
+                  value={squadsVault}
+                  onChange={(e) => { setSquadsVault(e.target.value); localStorage.setItem('yabbai_squads_vault', e.target.value); }}
+                  style={{ ...inputStyle, marginTop: 8, fontSize: 11 }}
+                  data-testid="squads-vault-input"
+                />
+                {(squadsVault || feeConfig.squadsVault) && (
                   <div style={{ marginTop: 6 }}>
-                    Vault: <a href={`https://app.squads.so/squads/${feeConfig.squadsVault}`} target="_blank" rel="noopener noreferrer" style={{ color: '#14F195', wordBreak: 'break-all' }}>{feeConfig.squadsVault} ↗</a>
+                    Vault: <a href={`https://app.squads.so/squads/${squadsVault || feeConfig.squadsVault}`} target="_blank" rel="noopener noreferrer" style={{ color: '#14F195', wordBreak: 'break-all' }}>{squadsVault || feeConfig.squadsVault} ↗</a>
                   </div>
-                ) : (
-                  <div style={{ marginTop: 6, color: '#7c98c4' }}>Set <code>SQUADS_VAULT</code> in backend env to enable a direct link.</div>
                 )}
               </div>
             )}
@@ -473,10 +480,10 @@ function RecoveryConsole({ token, onLogout }) {
                   className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: 11 }} data-testid="copy-squads-tx">
                   COPY TO CLIPBOARD
                 </button>
-                {feeConfig.squadsVault && (
-                  <a href={`https://app.squads.so/squads/${feeConfig.squadsVault}`} target="_blank" rel="noopener noreferrer"
-                     className="btn btn-primary" style={{ padding: '8px 14px', fontSize: 11, marginLeft: 8, textDecoration: 'none' }}>
-                    OPEN SQUADS ↗
+                {(squadsVault || feeConfig.squadsVault) && (
+                  <a href={`https://app.squads.so/squads/${squadsVault || feeConfig.squadsVault}/transactions/new`} target="_blank" rel="noopener noreferrer"
+                     className="btn btn-primary" style={{ padding: '8px 14px', fontSize: 11, marginLeft: 8, textDecoration: 'none' }} data-testid="open-squads-proposal">
+                    CREATE SQUADS PROPOSAL ↗
                   </a>
                 )}
               </div>
