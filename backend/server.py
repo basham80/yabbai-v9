@@ -708,6 +708,26 @@ async def referral_register(req: ReferralRegisterRequest):
     )
     return {"ok": True, "slug": slug, "wallet": req.wallet}
 
+@api_router.get("/referral/leaderboard")
+async def referral_leaderboard(limit: int = 5):
+    pipeline = [
+        {"$match": {"referralSlug": {"$ne": None}, "referralAmount": {"$gt": 0}}},
+        {"$group": {"_id": "$referralSlug", "totalSol": {"$sum": "$referralAmount"}, "count": {"$sum": 1}}},
+        {"$sort": {"totalSol": -1}},
+        {"$limit": limit},
+    ]
+    rows = await db.recovery_history.aggregate(pipeline).to_list(length=limit)
+    leaders = []
+    for r in rows:
+        reg = await db.referrals.find_one({"slug": r["_id"]}, {"_id": 0, "wallet": 1})
+        leaders.append({
+            "slug": r["_id"],
+            "totalSol": float(r["totalSol"]),
+            "count": int(r["count"]),
+            "wallet": (reg or {}).get("wallet"),
+        })
+    return {"ok": True, "leaders": leaders}
+
 @api_router.get("/referral/{slug}")
 async def referral_lookup(slug: str):
     doc = await db.referrals.find_one({"slug": slug.lower()}, {"_id": 0})
@@ -717,7 +737,6 @@ async def referral_lookup(slug: str):
 
 @api_router.get("/referral/{slug}/stats")
 async def referral_stats(slug: str):
-    """Aggregate fee earnings credited to a referral slug."""
     pipeline = [
         {"$match": {"referralSlug": slug.lower(), "referralAmount": {"$gt": 0}}},
         {"$group": {"_id": None, "totalSol": {"$sum": "$referralAmount"}, "count": {"$sum": 1}}},
@@ -727,7 +746,26 @@ async def referral_stats(slug: str):
     count = int(agg[0]["count"]) if agg else 0
     return {"ok": True, "slug": slug.lower(), "totalSol": total, "count": count}
 
-# ── Register all API routes ──────────────────────────────────────────────────
+@api_router.get("/referral/leaderboard")
+async def referral_leaderboard(limit: int = 5):
+    pipeline = [
+        {"$match": {"referralSlug": {"$ne": None}, "referralAmount": {"$gt": 0}}},
+        {"$group": {"_id": "$referralSlug", "totalSol": {"$sum": "$referralAmount"}, "count": {"$sum": 1}}},
+        {"$sort": {"totalSol": -1}},
+        {"$limit": limit},
+    ]
+    rows = await db.recovery_history.aggregate(pipeline).to_list(length=limit)
+    # Attach wallet from registry
+    leaders = []
+    for r in rows:
+        reg = await db.referrals.find_one({"slug": r["_id"]}, {"_id": 0, "wallet": 1})
+        leaders.append({
+            "slug": r["_id"],
+            "totalSol": float(r["totalSol"]),
+            "count": int(r["count"]),
+            "wallet": (reg or {}).get("wallet"),
+        })
+    return {"ok": True, "leaders": leaders}# ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 
 # ── Serve React Frontend in Production ───────────────────────────────────────

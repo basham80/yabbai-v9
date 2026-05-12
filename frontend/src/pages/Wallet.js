@@ -36,16 +36,23 @@ export default function Wallet() {
       const data = await res.json();
       if (data.ok) {
         setSolBal(data.sol);
-        setTokens(data.tokens.length > 0 ? data.tokens : MOCK_TOKENS);
+        // Hydrate each token with live Jupiter price (mainnet only, no demo fallback)
+        const priced = await Promise.all((data.tokens || []).map(async (t) => {
+          try {
+            const pr = await fetch(`${API}/jupiter-price?mint=${t.mint}`).then(r => r.json());
+            return { ...t, priceUsd: pr?.price || 0 };
+          } catch { return { ...t, priceUsd: 0 }; }
+        }));
+        setTokens(priced);
       } else {
         setError(data.error || 'RPC error');
-        setTokens(MOCK_TOKENS);
-        setSolBal(2.847);
+        setTokens([]);
+        setSolBal(0);
       }
     } catch {
-      setError('Network error — showing demo data');
-      setTokens(MOCK_TOKENS);
-      setSolBal(2.847);
+      setError('Network error');
+      setTokens([]);
+      setSolBal(0);
     }
     setLoading(false);
   }, []);
@@ -133,7 +140,12 @@ export default function Wallet() {
     }
   };
 
-  const portfolioUsd = 0; // mainnet-only: computed live from real wallet lookup elsewhere
+  const [solPrice, setSolPrice] = useState(0);
+  useEffect(() => {
+    fetch(`${API}/jupiter-price?mint=So11111111111111111111111111111111111111112`)
+      .then(r => r.json()).then(d => setSolPrice(d?.price || 0)).catch(() => {});
+  }, []);
+  const portfolioUsd = (solBal ?? 0) * solPrice + tokens.reduce((a, t) => a + (t.priceUsd || 0) * (t.amount || 0), 0);
 
   return (
     <div className="page-container fade-in">

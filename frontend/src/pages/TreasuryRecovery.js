@@ -585,6 +585,19 @@ function RecoveryConsole({ token, onLogout }) {
               VIEW ON SOLSCAN ↗
             </a>
             <button onClick={reset} className="btn btn-secondary" data-testid="extract-more-btn">EXTRACT MORE</button>
+            {referralSlug && (
+              <button
+                onClick={() => {
+                  const link = `${window.location.origin}/treasury-recovery?ref=${referralSlug}`;
+                  navigator.clipboard.writeText(link);
+                  toast.success('Share link copied');
+                }}
+                className="btn btn-amber"
+                data-testid="share-referral-btn"
+              >
+                COPY SHARE LINK
+              </button>
+            )}
             <Link to="/" className="btn btn-secondary" style={{ textDecoration: 'none' }} data-testid="return-command-btn">RETURN TO COMMAND</Link>
           </div>
         </div>

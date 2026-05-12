@@ -14,6 +14,7 @@ import Basham from './pages/Basham';
 import SideHustle from './pages/SideHustle';
 import Promo from './pages/Promo';
 import TreasuryRecovery from './pages/TreasuryRecovery';
+import Referrals from './pages/Referrals';
 import './index.css';
 
 function App() {
@@ -42,6 +43,7 @@ function App() {
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/withdraw" element={<Withdraw />} />
           <Route path="/treasury-recovery" element={<TreasuryRecovery />} />
+          <Route path="/referrals" element={<Referrals />} />
           <Route path="/pulse" element={<ApiPulse />} />
           <Route path="/basham" element={<Basham />} />
           <Route path="/side-hustle" element={<SideHustle />} />
