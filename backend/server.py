@@ -245,7 +245,7 @@ async def get_swap_quote(req: SwapQuoteRequest):
     try:
         async with httpx.AsyncClient(timeout=10.0) as client_h:
             resp = await client_h.get(
-                "https://quote-api.jup.ag/v6/quote",
+                "https://lite-api.jup.ag/swap/v1/quote",
                 params={
                     "inputMint": req.inputMint,
                     "outputMint": req.outputMint,
@@ -271,7 +271,7 @@ async def create_swap_tx(req: SwapTxRequest):
     try:
         async with httpx.AsyncClient(timeout=15.0) as client_h:
             resp = await client_h.post(
-                "https://quote-api.jup.ag/v6/swap",
+                "https://lite-api.jup.ag/swap/v1/swap",
                 json={
                     "quoteResponse": req.quoteResponse,
                     "userPublicKey": req.userPublicKey,

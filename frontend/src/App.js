@@ -42,7 +42,7 @@ function App() {
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/withdraw" element={<Withdraw />} />
           <Route path="/treasury-recovery" element={<TreasuryRecovery />} />
-          <Route path="/api-pulse" element={<ApiPulse />} />
+          <Route path="/pulse" element={<ApiPulse />} />
           <Route path="/basham" element={<Basham />} />
           <Route path="/side-hustle" element={<SideHustle />} />
           <Route path="/promo" element={<Promo />} />

@@ -10,7 +10,7 @@ const NAV_LINKS = [
   { to: '/wallet', label: 'Wallet' },
   { to: '/withdraw', label: 'Withdraw' },
   { to: '/treasury-recovery', label: 'Recovery' },
-  { to: '/api-pulse', label: 'API Pulse' },
+  { to: '/pulse', label: 'API Pulse' },
   { to: '/basham', label: 'BASHAM' },
   { to: '/side-hustle', label: 'Side Hustle' },
   { to: '/promo', label: 'Promo' },
