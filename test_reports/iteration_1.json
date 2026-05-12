@@ -1,0 +1,63 @@
+{
+  "summary": "Backend: 9/10 pytest passing. Frontend: 11/12 routes load; Treasury Recovery page renders with all required elements, security warnings, quick buttons, pre-filled destination, Phantom connect, funnel-out button. Two critical bugs found.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/swap-quote (and /api/create-swap-tx)",
+        "issue": "Uses dead host quote-api.jup.ag (DNS NXDOMAIN). Jupiter v6 endpoint was deprecated. Returns {ok:false, error:'[Errno -5] No address associated with hostname'}. Must migrate to https://lite-api.jup.ag/swap/v1/quote and https://lite-api.jup.ag/swap/v1/swap (verified working from container — returns valid route plan).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "TreasuryRecovery balance card",
+        "issue": "Treasury card displays 0.0000 SOL while top ticker shows 124.7 SOL from same backend endpoint. Either an integration bug (wrong field parsed, not awaiting /api/solana-balance response) or balance has not finished loading on initial render. Verify TreasuryRecovery.js sets balance from result.sol after fetch and check loading state.",
+        "selector": "[data-testid='treasury-balance']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "SideHustle page",
+        "issue": "React hydration warning: '<span> cannot be a child of <option>'. Fix by removing span/icon nested inside <option> elements in SideHustle.js select dropdown.",
+        "selector": "select option > span",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Routing for /api-pulse",
+        "issue": "Visiting /api-pulse returns FastAPI 404 ({\"detail\":\"Not Found\"}) instead of React page. Kubernetes ingress routes anything matching prefix /api* to backend port 8001, and /api-pulse falls under that prefix. Rename the route to /apipulse or /pulse (and update Layout nav link + any internal Links).",
+        "affected_selectors": ["/api-pulse route", "Layout nav 'API PULSE' link"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Backend: migrate /api/swap-quote from https://quote-api.jup.ag/v6/quote to https://lite-api.jup.ag/swap/v1/quote (GET, same params).",
+    "Backend: migrate /api/create-swap-tx from https://quote-api.jup.ag/v6/swap to https://lite-api.jup.ag/swap/v1/swap (POST).",
+    "Frontend: rename /api-pulse route -> /apipulse (or /pulse) in App.js routes and Layout.js nav link; update all internal Links/buttons. This is required because K8s ingress treats /api* as backend.",
+    "Frontend: ensure TreasuryRecovery balance card binds to /api/solana-balance result.sol and refreshes; currently shows 0.0000 SOL while ticker shows 124.7 SOL.",
+    "Frontend: fix hydration warning on SideHustle page — remove <span> child inside <option> tags."
+  ],
+  "critical_code_review_comments": [
+    "server.py mixes API and static file serving — fine for production, but app.mount('/', StaticFiles) at root masks /api-pulse via ingress not via FastAPI; consider distinct routing.",
+    "Two outbound integrations (quote-api.jup.ag) are not in production-ready state — needs migration audit for all Jupiter URLs.",
+    "/api/token-live-stats uses bare except: pass for Birdeye block — log instead of swallowing silently.",
+    "TokenMintConfig route has no auth; anyone can POST and overwrite mainnet mint config. Consider an admin key.",
+    "swap-quote assumes 9 decimals (SOL) for ALL inputs — multiplies amount * 1e9 even if inputMint is USDC (6 decimals). This is a real bug when input is not SOL."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "90%", "frontend": "85%"},
+  "test_credentials": "none required",
+  "seed_data_creation": "none; token-mint config left cleared after lifecycle test.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Pytest file at /app/backend/tests/backend_test.py covers health, token-mint CRUD, jupiter-price, solana-balance, token-live-stats, swap-quote, generate-mission, and invalid-input handling. After main agent migrates Jupiter URLs and renames /api-pulse, rerun pytest and re-verify the /apipulse (or new) route loads in the SPA and Treasury balance card populates with real SOL.",
+  "rca of the issue": "1) swap-quote: quote-api.jup.ag was sunset in 2025 in favor of lite-api.jup.ag/swap/v1. Container DNS confirms NXDOMAIN. Fix = change URL. 2) /api-pulse 404: Kubernetes ingress is configured to forward all paths starting with /api to backend (port 8001). The frontend route name itself collides with the ingress rule, so the request never reaches React. Fix = rename the path (and the Layout nav link href) to not start with /api."
+}
