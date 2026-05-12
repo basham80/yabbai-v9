@@ -27,9 +27,9 @@ const EVENT_TEMPLATES = [
 
 const STAT_KEYS = [
   { key: 'price', label: 'PRICE', fmt: (v) => `$${v.toFixed(8)}`, color: '#e8f0ff' },
-  { key: 'mcap', label: 'MCAP', fmt: (v) => `$${(v/1e6).toFixed(2)}M`, color: '#14F195' },
-  { key: 'liquidity', label: 'LIQUIDITY', fmt: (v) => `$${(v/1e6).toFixed(2)}M`, color: '#9945FF' },
-  { key: 'volume24h', label: '24H VOL', fmt: (v) => `$${(v/1e6).toFixed(2)}M`, color: '#14F195' },
+  { key: 'mcap', label: 'MCAP', fmt: (v) => v > 1e6 ? `$${(v/1e6).toFixed(2)}M` : v > 1e3 ? `$${(v/1e3).toFixed(2)}K` : `$${(v||0).toFixed(2)}`, color: '#14F195' },
+  { key: 'liquidity', label: 'LIQUIDITY', fmt: (v) => v > 1e6 ? `$${(v/1e6).toFixed(2)}M` : v > 1e3 ? `$${(v/1e3).toFixed(2)}K` : `$${(v||0).toFixed(2)}`, color: '#9945FF' },
+  { key: 'volume24h', label: '24H VOL', fmt: (v) => v > 1e6 ? `$${(v/1e6).toFixed(2)}M` : v > 1e3 ? `$${(v/1e3).toFixed(2)}K` : `$${(v||0).toFixed(2)}`, color: '#14F195' },
   { key: 'missions', label: 'MISSIONS', fmt: (v) => v.toString(), color: '#14F195' },
   { key: 'yield', label: 'YIELD TODAY', fmt: (v) => `$${v.toFixed(2)}`, color: '#14F195' },
   { key: 'treasury', label: 'TREASURY SOL', fmt: (v) => `${v.toFixed(2)} SOL`, color: '#9945FF' },
@@ -146,17 +146,42 @@ const NeuralCanvas = () => {
 export default function CommandCentre() {
   const [currentPhase, setCurrentPhase] = useState(2);
   const [stats, setStats] = useState({
-    price: 0.002441,
-    mcap: 2440000,
-    holders: 1337,
-    missions: 42,
-    yield: 847.33,
-    treasury: 124.7,
-    apy: 847,
-    txs: 12441,
+    price: 0, mcap: 0, liquidity: 0, volume24h: 0, holders: 0, missions: 0,
+    yield: 0, treasury: 0, apy: 0, txs: 0,
   });
   const [events, setEvents] = useState([]);
   const [counter, setCounter] = useState(0);
+
+  // Live mainnet feed: $YABBAI price, liquidity, treasury balance, fee revenue
+  useEffect(() => {
+    const base = process.env.REACT_APP_BACKEND_URL;
+    const TREASURY = '7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR';
+    const YABBAI = 'HbtUQfmgkasRwSmqG1C2xSPNkfdyZ5jUrnw6vPCGpump';
+    const load = async () => {
+      const [tok, bal, fee, hist] = await Promise.all([
+        fetch(`${base}/api/token-live-stats?mint=${YABBAI}`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/solana-balance?owner=${TREASURY}`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/fee-revenue?days=30`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/recovery/history?token=${encodeURIComponent(sessionStorage.getItem('yabbai_recovery_token') || '')}&limit=20`).then(r => r.ok ? r.json() : null).catch(() => null),
+      ]);
+      setStats((s) => ({
+        ...s,
+        price: tok?.price || 0,
+        mcap: tok?.marketCap || 0,
+        liquidity: tok?.liquidity || 0,
+        volume24h: tok?.volume24h || 0,
+        holders: 0, // not yet measured
+        missions: hist?.items?.length || 0,
+        yield: fee?.totalUsd || 0,
+        treasury: bal?.ok ? bal.sol : 0,
+        apy: 0, // not yet measured
+        txs: hist?.items?.length || 0,
+      }));
+    };
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   const genEvent = useCallback(() => {
     const template = EVENT_TEMPLATES[Math.floor(Math.random() * EVENT_TEMPLATES.length)];
@@ -166,35 +191,37 @@ export default function CommandCentre() {
   }, []);
 
   useEffect(() => {
-    // Seed events
-    setEvents(Array.from({ length: 8 }, genEvent));
-  }, [genEvent]);
-
-  useEffect(() => {
-    const tick = setInterval(() => {
-      setStats(prev => ({
-        price: randomWiggle(prev.price, 0.02),
-        mcap: randomWiggle(prev.mcap, 0.015),
-        holders: prev.holders + (Math.random() > 0.7 ? 1 : 0),
-        missions: prev.missions + (Math.random() > 0.85 ? 1 : 0),
-        yield: prev.yield + Math.random() * 0.5,
-        treasury: randomWiggle(prev.treasury, 0.005),
-        apy: randomWiggle(prev.apy, 0.01),
-        txs: prev.txs + Math.floor(Math.random() * 5),
-      }));
-      setCounter(c => c + 1);
-    }, 1200);
-    return () => clearInterval(tick);
+    // Seed events from real recovery history only (no synthetic events in live mode)
+    const base = process.env.REACT_APP_BACKEND_URL;
+    const tok = sessionStorage.getItem('yabbai_recovery_token');
+    if (!tok) { setEvents([]); return; }
+    fetch(`${base}/api/recovery/history?token=${encodeURIComponent(tok)}&limit=8`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d?.ok) return;
+        setEvents((d.items || []).map((h, i) => ({
+          id: h.signature || i,
+          ts: (h.createdAt || '').slice(11, 19),
+          text: `treasury.recover ${h.amount} SOL → ${h.destination.slice(0, 6)}…`,
+          color: '#14F195',
+        })));
+      })
+      .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (counter === 0) return;
-    const ev = genEvent();
-    setEvents(prev => [ev, ...prev].slice(0, 40));
-  }, [counter, genEvent]);
 
   return (
     <div className="page-container fade-in">
+      {/* LIVE-ONLY MODE banner */}
+      <div style={{
+        margin: '0 0 16px', padding: '10px 16px', borderRadius: 8,
+        background: 'linear-gradient(90deg, rgba(20,241,149,0.08), rgba(153,69,255,0.06))',
+        border: '1px solid rgba(20,241,149,0.3)',
+        fontFamily: 'var(--font-mono)', fontSize: 11, color: '#a8b8d0',
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      }} data-testid="live-only-banner">
+        <span style={{ color: '#14F195' }}>● LIVE DATA ONLY</span>
+        <span>All numbers are sourced from Solana mainnet & Jupiter v3. No synthetic stats.</span>
+      </div>
       {/* Hero */}
       <section
         style={{
@@ -310,10 +337,10 @@ export default function CommandCentre() {
           <div className="divider" style={{ marginTop: 16 }} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              { label: 'UPTIME', value: '99.9%', color: '#14F195' },
-              { label: 'AVG LATENCY', value: '47ms', color: '#9945FF' },
-              { label: 'REQUESTS', value: '24,441', color: '#e8f0ff' },
-              { label: 'SUCCESS RATE', value: '98.7%', color: '#14F195' },
+              { label: 'UPTIME', value: '—', color: '#7c98c4' },
+              { label: 'AVG LATENCY', value: '—', color: '#7c98c4' },
+              { label: 'REQUESTS', value: '—', color: '#7c98c4' },
+              { label: 'SUCCESS RATE', value: '—', color: '#7c98c4' },
             ].map(({ label, value, color }) => (
               <div key={label}>
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 900, color }}>{value}</div>

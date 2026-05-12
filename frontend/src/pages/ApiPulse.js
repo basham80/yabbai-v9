@@ -75,38 +75,30 @@ const WaveformCanvas = ({ cascadeMode }) => {
 
 export default function ApiPulse() {
   const [apis, setApis] = useState(() =>
-    API_ENDPOINTS.map(a => ({
-      ...a,
-      status: Math.random() > 0.15 ? 'live' : 'error',
-      latency: Math.floor(Math.random() * 200 + 20),
-      calls: Math.floor(Math.random() * 5000 + 500),
-      pulsing: false,
-    }))
+    API_ENDPOINTS.map(a => ({ ...a, status: 'unknown', latency: 0, calls: 0, pulsing: false }))
   );
   const [cascadeMode, setCascadeMode] = useState(false);
-  const [totalCalls, setTotalCalls] = useState(24441);
-  const [avgLatency, setAvgLatency] = useState(47);
+  const [totalCalls, setTotalCalls] = useState(0);
+  const [avgLatency, setAvgLatency] = useState(0);
 
+  // Real latency probe against our own backend /api/health every 5s (mainnet-only mode)
   useEffect(() => {
-    const tick = setInterval(() => {
-      const idx = Math.floor(Math.random() * apis.length);
-      setApis(prev => prev.map((a, i) => {
-        if (i !== idx) return a;
-        const newLat = Math.max(10, a.latency + Math.floor((Math.random() - 0.5) * 40));
-        return {
-          ...a,
-          latency: newLat,
-          calls: a.calls + Math.floor(Math.random() * 15),
-          pulsing: true,
-          status: Math.random() > 0.05 ? 'live' : 'error',
-        };
-      }));
-      setTotalCalls(c => c + Math.floor(Math.random() * 20 + 5));
-      setAvgLatency(l => Math.max(10, l + Math.floor((Math.random() - 0.5) * 10)));
-      setTimeout(() => setApis(prev => prev.map((a, i) => i === idx ? { ...a, pulsing: false } : a)), 700);
-    }, cascadeMode ? 300 : 1200);
-    return () => clearInterval(tick);
-  }, [apis.length, cascadeMode]);
+    const ping = async () => {
+      const t0 = performance.now();
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/health`);
+        const elapsed = Math.round(performance.now() - t0);
+        setAvgLatency(elapsed);
+        setApis(prev => prev.map(a => ({ ...a, status: r.ok ? 'live' : 'error', latency: elapsed })));
+        setTotalCalls(c => c + 1);
+      } catch {
+        setApis(prev => prev.map(a => ({ ...a, status: 'error' })));
+      }
+    };
+    ping();
+    const id = setInterval(ping, cascadeMode ? 1000 : 5000);
+    return () => clearInterval(id);
+  }, [cascadeMode]);
 
   const liveCount = apis.filter(a => a.status === 'live').length;
 

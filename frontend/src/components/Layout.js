@@ -16,20 +16,38 @@ const NAV_LINKS = [
   { to: '/promo', label: 'Promo' },
 ];
 
-const TICKER_ITEMS = [
-  { label: 'SOL', value: '$178.42', color: 'solana-green' },
-  { label: 'BTC', value: '$98,441', color: '' },
-  { label: 'ETH', value: '$3,284', color: '' },
-  { label: 'YABBAI', value: 'LIVE', color: 'solana-purple' },
-  { label: 'MCAP', value: '$2.4M', color: 'solana-green' },
-  { label: 'HOLDERS', value: '1,337', color: '' },
-  { label: 'MISSIONS', value: '42 ACTIVE', color: 'solana-green' },
-  { label: 'YIELD', value: '+$847 TODAY', color: 'solana-green' },
-  { label: 'TREASURY', value: '124.7 SOL', color: 'solana-purple' },
-  { label: 'APY', value: '847%', color: 'solana-green' },
-  { label: 'TXS', value: '12,441 TODAY', color: '' },
-  { label: 'NETWORK', value: 'MAINNET-BETA', color: '' },
-];
+const TREASURY_ADDR = '7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR';
+const YABBAI_MINT = 'HbtUQfmgkasRwSmqG1C2xSPNkfdyZ5jUrnw6vPCGpump';
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+function useLiveTicker() {
+  const [items, setItems] = useState([
+    { label: 'NETWORK', value: 'MAINNET-BETA', color: '' },
+  ]);
+  useEffect(() => {
+    const base = process.env.REACT_APP_BACKEND_URL;
+    const load = async () => {
+      const [solR, yabR, balR, feeR] = await Promise.all([
+        fetch(`${base}/api/jupiter-price?mint=${SOL_MINT}`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/token-live-stats?mint=${YABBAI_MINT}`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/solana-balance?owner=${TREASURY_ADDR}`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/fee-revenue?days=30`).then(r => r.json()).catch(() => null),
+      ]);
+      const next = [];
+      if (solR?.price) next.push({ label: 'SOL', value: `$${Number(solR.price).toFixed(2)}`, color: 'solana-green' });
+      if (yabR?.price != null) next.push({ label: 'YABBAI', value: `$${Number(yabR.price).toExponential(2)}`, color: 'solana-purple' });
+      if (yabR?.liquidity) next.push({ label: 'LIQUIDITY', value: `$${Number(yabR.liquidity).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: 'solana-green' });
+      if (balR?.ok) next.push({ label: 'TREASURY', value: `${Number(balR.sol).toFixed(4)} SOL`, color: 'solana-purple' });
+      if (feeR?.ok) next.push({ label: 'FEE 30D', value: `${Number(feeR.totalSol).toFixed(4)} SOL`, color: 'solana-green' });
+      next.push({ label: 'NETWORK', value: 'MAINNET-BETA', color: '' });
+      setItems(next);
+    };
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, []);
+  return items;
+}
 
 export default function Layout() {
   const location = useLocation();
@@ -37,6 +55,7 @@ export default function Layout() {
   const [theme, setTheme] = useState('yabbai');
 
   const isBasham = location.pathname === '/basham' || location.pathname === '/side-hustle';
+  const tickerItems = useLiveTicker();
 
   useEffect(() => {
     if (isBasham) setTheme('basham');
@@ -47,7 +66,7 @@ export default function Layout() {
     if (mobileOpen) setMobileOpen(false);
   }, [location.pathname]);
 
-  const doubled = [...TICKER_ITEMS, ...TICKER_ITEMS];
+  const doubled = [...tickerItems, ...tickerItems];
 
   return (
     <div className={`app-shell theme-${theme}`}>
