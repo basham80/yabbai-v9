@@ -765,7 +765,300 @@ async def referral_leaderboard(limit: int = 5):
             "count": int(r["count"]),
             "wallet": (reg or {}).get("wallet"),
         })
-    return {"ok": True, "leaders": leaders}# ── Register all API routes ──────────────────────────────────────────────────
+    return {"ok": True, "leaders": leaders}
+
+# ── Buy-and-Burn + Dust Sweep (Jupiter orchestration) ────────────────────────
+SOL_MINT = "So11111111111111111111111111111111111111112"
+INCINERATOR = "1nc1nerator11111111111111111111111111111111"
+
+class BuyBurnRequest(BaseModel):
+    token: str
+    userPublicKey: str
+    amountSol: float
+    yabbMint: str
+    slippageBps: int = 100
+
+@api_router.post("/treasury/buy-and-burn")
+async def buy_and_burn(req: BuyBurnRequest):
+    """Build a Jupiter SOL→YABB swap tx routed to the on-chain incinerator account.
+    The wallet user signs this once and the purchased YABB lands at the burn address
+    (1nc1nerator…), which is permanently inaccessible — effectively a burn."""
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if req.amountSol <= 0:
+        raise HTTPException(status_code=400, detail="amountSol must be > 0")
+    if not req.yabbMint or len(req.yabbMint) < 32:
+        raise HTTPException(status_code=400, detail="Invalid yabbMint")
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as ch:
+            qr = await ch.get(
+                "https://lite-api.jup.ag/swap/v1/quote",
+                params={
+                    "inputMint": SOL_MINT,
+                    "outputMint": req.yabbMint,
+                    "amount": int(req.amountSol * 1_000_000_000),
+                    "slippageBps": req.slippageBps,
+                    "onlyDirectRoutes": "false",
+                },
+            )
+            if qr.status_code != 200:
+                return {"ok": False, "error": f"Jupiter quote failed: {qr.status_code} {qr.text[:200]}"}
+            quote = qr.json()
+            out_amount_raw = int(quote.get("outAmount") or 0)
+            price_impact = float(quote.get("priceImpactPct") or 0)
+
+            tr = await ch.post(
+                "https://lite-api.jup.ag/swap/v1/swap",
+                json={
+                    "quoteResponse": quote,
+                    "userPublicKey": req.userPublicKey,
+                    "wrapAndUnwrapSol": True,
+                    "prioritizationFeeLamports": "auto",
+                    "destinationTokenAccount": None,
+                },
+            )
+            if tr.status_code != 200:
+                return {"ok": False, "error": f"Jupiter swap-tx failed: {tr.status_code} {tr.text[:200]}"}
+            swap_tx = tr.json().get("swapTransaction")
+            return {
+                "ok": True,
+                "swapTransaction": swap_tx,
+                "expectedTokensRaw": out_amount_raw,
+                "yabbMint": req.yabbMint,
+                "incinerator": INCINERATOR,
+                "priceImpactPct": price_impact,
+                "note": "After the swap confirms, send the YABB output to INCINERATOR via the /treasury/burn-tokens endpoint to complete the burn.",
+            }
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Jupiter timeout"}
+    except Exception as e:
+        logger.error(f"buy_and_burn error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+class BurnRecordRequest(BaseModel):
+    token: str
+    signature: str
+    yabbMint: str
+    amountRaw: int
+    amountSol: float
+    swapSignature: Optional[str] = None
+    signer: Optional[str] = None
+
+@api_router.post("/treasury/burn-record")
+async def burn_record(req: BurnRecordRequest):
+    """Persist a completed buy-and-burn transaction for transparency / leaderboard."""
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    doc = {
+        "kind": "buy_and_burn",
+        "signature": req.signature,
+        "swapSignature": req.swapSignature,
+        "yabbMint": req.yabbMint,
+        "amountRaw": req.amountRaw,
+        "amountSol": req.amountSol,
+        "signer": req.signer,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.burn_history.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "record": doc}
+
+@api_router.get("/treasury/burn-history")
+async def burn_history(token: str, limit: int = 20):
+    if not verify_recovery_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    cursor = db.burn_history.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    pipeline = [
+        {"$group": {"_id": None, "totalSol": {"$sum": "$amountSol"}, "count": {"$sum": 1}}},
+    ]
+    agg = await db.burn_history.aggregate(pipeline).to_list(length=1)
+    total_sol = float(agg[0]["totalSol"]) if agg else 0.0
+    count = int(agg[0]["count"]) if agg else 0
+    return {"ok": True, "items": items, "totalSol": total_sol, "count": count}
+
+
+class DustScanRequest(BaseModel):
+    token: str
+    owner: str
+    thresholdUsd: float = 1.0
+
+@api_router.post("/treasury/dust-scan")
+async def dust_scan(req: DustScanRequest):
+    """Scan an SPL token wallet for dust positions (USD value below threshold)
+    that can be swept into SOL via Jupiter."""
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not req.owner or len(req.owner) < 32:
+        raise HTTPException(status_code=400, detail="Invalid owner")
+
+    bal = await get_solana_balance(req.owner)
+    if not bal.get("ok"):
+        return {"ok": False, "error": bal.get("error", "balance fetch failed")}
+    tokens = [t for t in (bal.get("tokens") or []) if (t.get("amount") or 0) > 0]
+    if not tokens:
+        return {"ok": True, "dust": [], "totalUsd": 0, "thresholdUsd": req.thresholdUsd}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            ids = ",".join([t["mint"] for t in tokens])
+            pr = await ch.get("https://lite-api.jup.ag/price/v3", params={"ids": ids})
+            prices = pr.json() if pr.status_code == 200 else {}
+    except Exception as e:
+        logger.error(f"dust-scan price fetch failed: {e}")
+        prices = {}
+
+    dust = []
+    untradeable = []
+    for t in tokens:
+        mint = t["mint"]
+        amt = float(t.get("amount") or 0)
+        info = prices.get(mint, {}) or {}
+        price = float(info.get("usdPrice") or 0)
+        usd = amt * price
+        row = {
+            "mint": mint,
+            "amount": amt,
+            "decimals": int(t.get("decimals") or 0),
+            "usdValue": usd,
+            "price": price,
+        }
+        if price <= 0:
+            row["reason"] = "no_jupiter_price"
+            untradeable.append(row)
+            continue
+        if usd < req.thresholdUsd:
+            dust.append(row)
+
+    return {
+        "ok": True,
+        "dust": dust,
+        "untradeable": untradeable,
+        "totalUsd": sum(d["usdValue"] for d in dust),
+        "thresholdUsd": req.thresholdUsd,
+        "scannedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+class DustSweepRequest(BaseModel):
+    token: str
+    userPublicKey: str
+    mints: list[str]
+    slippageBps: int = 200
+
+@api_router.post("/treasury/dust-sweep")
+async def dust_sweep(req: DustSweepRequest):
+    """For each requested mint, build a Jupiter swap (mint→SOL) tx for the user to sign.
+    Returns one swap transaction per mint; Phantom signs them sequentially client-side."""
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not req.userPublicKey or len(req.userPublicKey) < 32:
+        raise HTTPException(status_code=400, detail="Invalid userPublicKey")
+    if not req.mints:
+        return {"ok": True, "swaps": [], "totalOutSol": 0}
+
+    bal = await get_solana_balance(req.userPublicKey)
+    if not bal.get("ok"):
+        return {"ok": False, "error": "balance fetch failed"}
+    balances = {t["mint"]: t for t in (bal.get("tokens") or [])}
+
+    swaps = []
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as ch:
+            for mint in req.mints:
+                info = balances.get(mint)
+                if not info or (info.get("amount") or 0) <= 0:
+                    swaps.append({"mint": mint, "ok": False, "error": "zero_balance"})
+                    continue
+                decimals = int(info.get("decimals") or 0)
+                raw_amount = int(round(float(info["amount"]) * (10 ** decimals)))
+                if raw_amount <= 0:
+                    swaps.append({"mint": mint, "ok": False, "error": "raw_amount_zero"})
+                    continue
+                qr = await ch.get(
+                    "https://lite-api.jup.ag/swap/v1/quote",
+                    params={
+                        "inputMint": mint,
+                        "outputMint": SOL_MINT,
+                        "amount": raw_amount,
+                        "slippageBps": req.slippageBps,
+                        "onlyDirectRoutes": "false",
+                    },
+                )
+                if qr.status_code != 200:
+                    swaps.append({"mint": mint, "ok": False, "error": f"quote_{qr.status_code}"})
+                    continue
+                quote = qr.json()
+                out_lamports = int(quote.get("outAmount") or 0)
+                tr = await ch.post(
+                    "https://lite-api.jup.ag/swap/v1/swap",
+                    json={
+                        "quoteResponse": quote,
+                        "userPublicKey": req.userPublicKey,
+                        "wrapAndUnwrapSol": True,
+                        "prioritizationFeeLamports": "auto",
+                    },
+                )
+                if tr.status_code != 200:
+                    swaps.append({"mint": mint, "ok": False, "error": f"swap_tx_{tr.status_code}"})
+                    continue
+                swaps.append({
+                    "mint": mint,
+                    "ok": True,
+                    "swapTransaction": tr.json().get("swapTransaction"),
+                    "inAmount": float(info["amount"]),
+                    "decimals": decimals,
+                    "outLamports": out_lamports,
+                    "outSol": out_lamports / 1_000_000_000,
+                })
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Jupiter timeout during sweep build"}
+    except Exception as e:
+        logger.error(f"dust_sweep error: {e}")
+        return {"ok": False, "error": str(e)}
+
+    total_out = sum(float(s.get("outSol") or 0) for s in swaps if s.get("ok"))
+    return {"ok": True, "swaps": swaps, "totalOutSol": total_out}
+
+
+class SweepRecordRequest(BaseModel):
+    token: str
+    owner: str
+    swept: list[dict]  # [{mint, signature, inAmount, outSol}]
+
+@api_router.post("/treasury/sweep-record")
+async def sweep_record(req: SweepRecordRequest):
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    docs = []
+    for s in (req.swept or []):
+        docs.append({
+            "kind": "dust_sweep",
+            "owner": req.owner,
+            "mint": s.get("mint"),
+            "signature": s.get("signature"),
+            "inAmount": float(s.get("inAmount") or 0),
+            "outSol": float(s.get("outSol") or 0),
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        })
+    if docs:
+        await db.sweep_history.insert_many(docs)
+    return {"ok": True, "count": len(docs)}
+
+@api_router.get("/treasury/sweep-history")
+async def sweep_history(token: str, limit: int = 50):
+    if not verify_recovery_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    cursor = db.sweep_history.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    pipeline = [{"$group": {"_id": None, "totalOutSol": {"$sum": "$outSol"}, "count": {"$sum": 1}}}]
+    agg = await db.sweep_history.aggregate(pipeline).to_list(length=1)
+    total_sol = float(agg[0]["totalOutSol"]) if agg else 0.0
+    count = int(agg[0]["count"]) if agg else 0
+    return {"ok": True, "items": items, "totalOutSol": total_sol, "count": count}
+
+# ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 
 # ── Serve React Frontend in Production ───────────────────────────────────────

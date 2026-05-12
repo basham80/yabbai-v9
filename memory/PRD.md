@@ -13,6 +13,22 @@ Build complete YabbAI-Brain production app from "profitr-main (2).zip":
 - **Frontend**: React + CRACO via `yarn start` on port 3000 (supervisor)
 - **External APIs**: Jupiter v3 (lite-api.jup.ag), Solana mainnet RPC, Phantom (window.solana)
 
+## Implemented (2026-02-13)
+### Buy-and-Burn + Dust Sweep (P0 deferred from previous session — now DONE)
+- `POST /api/treasury/buy-and-burn` — Jupiter SOL→YABB swap tx + incinerator route
+- `POST /api/treasury/burn-record`, `GET /api/treasury/burn-history` — persists/lists burns (MongoDB `burn_history`)
+- `POST /api/treasury/dust-scan` — scans SPL wallet for tokens < USD threshold via Jupiter price
+- `POST /api/treasury/dust-sweep` — builds N Jupiter token→SOL swap txs for Phantom batch signing
+- `POST /api/treasury/sweep-record`, `GET /api/treasury/sweep-history` — persists/lists sweeps (MongoDB `sweep_history`)
+- Frontend: `BuyAndBurnPanel` + `DustSweepPanel` in `/app/frontend/src/components/TreasuryAdvanced.js` mounted in `/treasury-recovery` (password-gated)
+- Burn flow: Phantom signs (1) Jupiter swap, then (2) SPL transferChecked to `1nc1nerator11111111111111111111111111111111`
+- Sweep flow: sequential Phantom signing, partial-success tolerant, refresh + record on completion
+
+### Payment Engine mock data stripped (2026-02-13)
+- `/payment` no longer shows fake $28,837.50 fiat balances
+- Now displays only real Treasury SOL + USDC SPL balance (live RPC), real fee revenue, and "NOT INTEGRATED" badges for non-crypto rails
+- Transparency banner clarifies that funds shown are not extractable from this page
+
 ## Implemented (2026-02-12)
 ### Backend endpoints
 - `GET /api/health` — 200 healthy

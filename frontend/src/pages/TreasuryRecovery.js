@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import toast from 'react-hot-toast';
+import { BuyAndBurnPanel, DustSweepPanel } from '../components/TreasuryAdvanced';
 
 const TREASURY = '7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR';
 const SECURE_WALLET = '8e6ogxfUnj6YXHp1tR4Kj1ytSkmEhLhi2fbKqRVxUHPi';
@@ -602,6 +603,10 @@ function RecoveryConsole({ token, onLogout }) {
           </div>
         </div>
       )}
+
+      {/* Advanced operations: Buy-and-burn + Dust sweep */}
+      <BuyAndBurnPanel token={token} walletPubkey={phantomKey} />
+      <DustSweepPanel token={token} walletPubkey={phantomKey} />
 
       {/* History */}
       {history.length > 0 && (
