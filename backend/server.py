@@ -535,6 +535,48 @@ async def recovery_history(token: str, limit: int = 20):
     items = await cursor.to_list(length=limit)
     return {"ok": True, "items": items}
 
+@api_router.get("/fee-revenue")
+async def fee_revenue(days: int = 30):
+    """Public widget endpoint — aggregates 0.25% fee revenue over last N days."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    pipeline = [
+        {"$match": {"createdAt": {"$gte": cutoff}, "feeAmount": {"$gt": 0}}},
+        {"$group": {
+            "_id": None,
+            "total_sol": {"$sum": "$feeAmount"},
+            "count": {"$sum": 1},
+            "max_fee": {"$max": "$feeAmount"},
+        }},
+    ]
+    agg = await db.recovery_history.aggregate(pipeline).to_list(length=1)
+    total_sol = float(agg[0]["total_sol"]) if agg else 0.0
+    count = int(agg[0]["count"]) if agg else 0
+
+    # USD via cached SOL price
+    sol_mint = "So11111111111111111111111111111111111111112"
+    usd_price = 0.0
+    cached = cache_get(f"price:{sol_mint}")
+    if cached and cached.get("price"):
+        usd_price = float(cached["price"])
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as ch:
+                r = await ch.get("https://lite-api.jup.ag/price/v3", params={"ids": sol_mint})
+                if r.status_code == 200:
+                    usd_price = float(r.json().get(sol_mint, {}).get("usdPrice") or 0)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "days": days,
+        "totalSol": total_sol,
+        "totalUsd": total_sol * usd_price,
+        "solPrice": usd_price,
+        "count": count,
+    }
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

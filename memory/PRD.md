@@ -56,8 +56,12 @@ Build complete YabbAI-Brain production app from "profitr-main (2).zip":
 - Loading skeletons for treasury/wallet balance fetches
 
 ## P2 Backlog
-- Admin auth on /treasury-recovery (currently no auth — anyone can attempt extraction; only valid signer succeeds)
-- Persist transaction history for recoveries
+- ✅ Persist successful recoveries even if `/api/recovery/record` POST fails — IMPLEMENTED (localStorage retry queue, drained on every page load)
+- ✅ Rotate recovery password via admin command — IMPLEMENTED (`/app/backend/rotate_recovery_pwd.py <new_password>` updates bcrypt hash in `.env`)
+- ✅ Solscan link beside treasury address — IMPLEMENTED
+- ✅ Fee revenue dashboard widget on Command Centre — IMPLEMENTED (`GET /api/fee-revenue?days=30` returns totalSol, totalUsd, SOL price, count)
+- Admin auth on /treasury-recovery — DONE (bcrypt password gate)
+- Persist transaction history for recoveries — DONE
 - Multi-signature flow option
 - Export promo frames as PNG
 

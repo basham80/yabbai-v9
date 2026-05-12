@@ -125,15 +125,37 @@ function RecoveryConsole({ token, onLogout }) {
     } catch {}
   }, [token]);
 
+  // Drain any queued recovery records that failed to POST last time
+  const drainRetryQueue = useCallback(async () => {
+    const QKEY = 'yabbai_recovery_retry_queue';
+    let queue = [];
+    try { queue = JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch { queue = []; }
+    if (!queue.length) return;
+    const remaining = [];
+    for (const item of queue) {
+      try {
+        const r = await fetch(`${BACKEND}/api/recovery/record`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...item, token }),
+        });
+        if (!r.ok) remaining.push(item);
+      } catch { remaining.push(item); }
+    }
+    localStorage.setItem(QKEY, JSON.stringify(remaining));
+    if (queue.length !== remaining.length) fetchHistory();
+  }, [token, fetchHistory]);
+
   useEffect(() => {
     fetchBalance();
     fetchHistory();
+    drainRetryQueue();
     fetch(`${BACKEND}/api/recovery/config`).then(r => r.json()).then(d => {
       if (d?.feeWallet) setFeeConfig({ feeWallet: d.feeWallet, feeBps: d.feeBps });
     }).catch(() => {});
     const id = setInterval(fetchBalance, 30000);
     return () => clearInterval(id);
-  }, [fetchBalance, fetchHistory]);
+  }, [fetchBalance, fetchHistory, drainRetryQueue]);
 
   useEffect(() => {
     const s = window.solana;
@@ -195,17 +217,25 @@ function RecoveryConsole({ token, onLogout }) {
       const signature = await connection.sendRawTransaction(signed.serialize(), { preflightCommitment: 'confirmed' });
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
 
-      // Record on backend
+      // Record on backend (with localStorage retry queue on failure)
+      const record = {
+        signature, amount: amt, destination,
+        feeAmount, note, signer: fromPubkey.toString(),
+      };
       try {
-        await fetch(`${BACKEND}/api/recovery/record`, {
+        const r = await fetch(`${BACKEND}/api/recovery/record`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            token, signature, amount: amt, destination,
-            feeAmount, note, signer: fromPubkey.toString(),
-          }),
+          body: JSON.stringify({ ...record, token }),
         });
-      } catch {}
+        if (!r.ok) throw new Error('record failed');
+      } catch {
+        const QKEY = 'yabbai_recovery_retry_queue';
+        let q = [];
+        try { q = JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch {}
+        q.push(record);
+        localStorage.setItem(QKEY, JSON.stringify(q));
+      }
       fetchHistory();
 
       setTxSig(signature); setTxStatus('success');
@@ -270,7 +300,13 @@ function RecoveryConsole({ token, onLogout }) {
       {/* Treasury + Phantom cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 24 }}>
         <div className="glass-card" style={{ padding: 24 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#3a5070', letterSpacing: '0.2em' }}>TREASURY WALLET</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#3a5070', letterSpacing: '0.2em' }}>TREASURY WALLET</div>
+            <a href={`https://solscan.io/account/${TREASURY}`} target="_blank" rel="noopener noreferrer"
+               style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#9945FF', textDecoration: 'none' }} data-testid="treasury-solscan-link">
+              SOLSCAN ↗
+            </a>
+          </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#7c98c4', marginTop: 6, wordBreak: 'break-all' }} data-testid="treasury-address">
             {TREASURY}
           </div>

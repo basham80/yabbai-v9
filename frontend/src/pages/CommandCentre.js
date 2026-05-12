@@ -324,6 +324,7 @@ export default function CommandCentre() {
       </div>
 
       {/* Quick actions */}
+      <FeeRevenueWidget />
       <div className="card fade-in-4">
         <p className="section-label" style={{ marginBottom: 14 }}>QUICK ACTIONS</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -340,3 +341,44 @@ export default function CommandCentre() {
     </div>
   );
 }
+
+function FeeRevenueWidget() {
+  const [data, setData] = React.useState(null);
+  React.useEffect(() => {
+    const load = () => {
+      fetch(`${process.env.REACT_APP_BACKEND_URL}/api/fee-revenue?days=30`)
+        .then(r => r.json())
+        .then(d => { if (d?.ok) setData(d); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+  if (!data) return null;
+  return (
+    <div className="card fade-in-3" style={{ marginBottom: 16 }} data-testid="fee-revenue-widget">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
+        <div>
+          <p className="section-label" style={{ marginBottom: 6 }}>PROTOCOL FEE — LAST 30 DAYS</p>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 32, fontWeight: 800, color: '#14F195' }} data-testid="fee-total-sol">
+              {data.totalSol.toFixed(4)}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: '#7c98c4', fontSize: 12 }}>SOL</span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: '#b890ff', fontSize: 14 }} data-testid="fee-total-usd">
+              ≈ ${data.totalUsd.toFixed(2)}
+            </span>
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#3a5070', marginTop: 4 }}>
+            {data.count} extraction{data.count === 1 ? '' : 's'} · SOL @ ${data.solPrice.toFixed(2)}
+          </div>
+        </div>
+        <Link to="/treasury-recovery" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="fee-widget-cta">
+          ◆ Open Recovery Console
+        </Link>
+      </div>
+    </div>
+  );
+}
+
