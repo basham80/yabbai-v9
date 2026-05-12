@@ -5,11 +5,7 @@ const API = `${BACKEND_URL}/api`;
 
 const FEE_BUFFER = 0.005;
 
-const MOCK_TOKENS = [
-  { mint: 'So11111111111111111111111111111111111111112', name: 'SOL', amount: 2.847, decimals: 9, priceUsd: 178.42 },
-  { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', name: 'USDC', amount: 1240.50, decimals: 6, priceUsd: 1.00 },
-  { mint: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', name: 'mSOL', amount: 0.42, decimals: 9, priceUsd: 182.30 },
-];
+const MOCK_TOKENS = []; // no defaults — render only what /api/solana-balance returns
 
 export default function Wallet() {
   // Connected wallet
@@ -137,7 +133,7 @@ export default function Wallet() {
     }
   };
 
-  const portfolioUsd = (solBal ?? 0) * 178.42 + tokens.reduce((a, t) => a + (t.priceUsd || 0) * t.amount, 0);
+  const portfolioUsd = 0; // mainnet-only: computed live from real wallet lookup elsewhere
 
   return (
     <div className="page-container fade-in">
