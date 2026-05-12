@@ -499,6 +499,8 @@ async def recovery_config():
         "feeBps": FEE_BPS,
         "treasury": "7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR",
         "secureWallet": "8e6ogxfUnj6YXHp1tR4Kj1ytSkmEhLhi2fbKqRVxUHPi",
+        "squadsVault": os.environ.get("SQUADS_VAULT", "") or None,
+        "feeTiers": [{"label": "0.10%", "bps": 10}, {"label": "0.25%", "bps": 25}, {"label": "0.50%", "bps": 50}],
     }
 
 class RecoveryRecordRequest(BaseModel):
@@ -576,6 +578,34 @@ async def fee_revenue(days: int = 30):
         "solPrice": usd_price,
         "count": count,
     }
+
+@api_router.get("/fee-revenue/series")
+async def fee_revenue_series(days: int = 30):
+    """Per-day aggregate for the sparkline chart on Command Centre."""
+    from datetime import timedelta
+    today = datetime.now(timezone.utc).date()
+    cutoff = (datetime.combine(today - timedelta(days=days - 1), datetime.min.time(), tzinfo=timezone.utc)).isoformat()
+    pipeline = [
+        {"$match": {"createdAt": {"$gte": cutoff}, "feeAmount": {"$gt": 0}}},
+        {"$group": {
+            "_id": {"$substr": ["$createdAt", 0, 10]},
+            "sol": {"$sum": "$feeAmount"},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    agg = await db.recovery_history.aggregate(pipeline).to_list(length=days)
+    by_day = {row["_id"]: row for row in agg}
+    series = []
+    for i in range(days):
+        d = (today - timedelta(days=days - 1 - i)).isoformat()
+        row = by_day.get(d)
+        series.append({
+            "date": d,
+            "sol": float(row["sol"]) if row else 0.0,
+            "count": int(row["count"]) if row else 0,
+        })
+    return {"ok": True, "days": days, "series": series}
 
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)

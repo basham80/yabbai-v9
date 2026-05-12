@@ -99,7 +99,12 @@ function RecoveryConsole({ token, onLogout }) {
   const [destination, setDestination] = useState(SECURE_WALLET);
   const [note, setNote] = useState('');
   const [enableFee, setEnableFee] = useState(false);
-  const [feeConfig, setFeeConfig] = useState({ feeWallet: SECURE_WALLET, feeBps: 25 });
+  const [feeBpsOverride, setFeeBpsOverride] = useState(null); // user-selected tier
+  const [feeConfig, setFeeConfig] = useState({ feeWallet: SECURE_WALLET, feeBps: 25, squadsVault: null, feeTiers: [
+    { label: '0.10%', bps: 10 }, { label: '0.25%', bps: 25 }, { label: '0.50%', bps: 50 },
+  ] });
+  const [useSquads, setUseSquads] = useState(false);
+  const [squadsTxB64, setSquadsTxB64] = useState('');
   const [phantomConnected, setPhantomConnected] = useState(false);
   const [phantomKey, setPhantomKey] = useState(null);
   const [txStatus, setTxStatus] = useState('idle');
@@ -151,7 +156,12 @@ function RecoveryConsole({ token, onLogout }) {
     fetchHistory();
     drainRetryQueue();
     fetch(`${BACKEND}/api/recovery/config`).then(r => r.json()).then(d => {
-      if (d?.feeWallet) setFeeConfig({ feeWallet: d.feeWallet, feeBps: d.feeBps });
+      if (d?.feeWallet) setFeeConfig({
+        feeWallet: d.feeWallet,
+        feeBps: d.feeBps,
+        squadsVault: d.squadsVault || null,
+        feeTiers: d.feeTiers || [{label:'0.10%',bps:10},{label:'0.25%',bps:25},{label:'0.50%',bps:50}],
+      });
     }).catch(() => {});
     const id = setInterval(fetchBalance, 30000);
     return () => clearInterval(id);
@@ -189,7 +199,8 @@ function RecoveryConsole({ token, onLogout }) {
     let destPubkey;
     try { destPubkey = new PublicKey(destination); } catch { return toast.error('Invalid destination address'); }
 
-    const feeAmount = enableFee ? +(amt * feeConfig.feeBps / 10000).toFixed(9) : 0;
+    const activeBps = feeBpsOverride ?? feeConfig.feeBps;
+    const feeAmount = enableFee ? +(amt * activeBps / 10000).toFixed(9) : 0;
     const netAmount = amt - feeAmount;
 
     setTxStatus('pending');
@@ -213,6 +224,17 @@ function RecoveryConsole({ token, onLogout }) {
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPubkey;
+
+      // ── Squads multi-sig mode: serialize + show, do not broadcast ──────
+      if (useSquads) {
+        const serialized = tx.serializeMessage();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(serialized)));
+        setSquadsTxB64(b64);
+        setTxStatus('idle');
+        toast.success('Transaction prepared for Squads — copy & submit to your vault');
+        return;
+      }
+
       const signed = await window.solana.signTransaction(tx);
       const signature = await connection.sendRawTransaction(signed.serialize(), { preflightCommitment: 'confirmed' });
       await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
@@ -257,8 +279,9 @@ function RecoveryConsole({ token, onLogout }) {
 
   const reset = () => { setAmount(''); setNote(''); setTxSig(null); setTxStatus('idle'); setTxError(''); };
 
+  const activeBps = feeBpsOverride ?? feeConfig.feeBps;
   const feePreview = enableFee && amount
-    ? +(parseFloat(amount) * feeConfig.feeBps / 10000).toFixed(6)
+    ? +(parseFloat(amount) * activeBps / 10000).toFixed(6)
     : 0;
   const netPreview = amount && enableFee
     ? Math.max(0, parseFloat(amount) - feePreview).toFixed(6)
@@ -369,7 +392,7 @@ function RecoveryConsole({ token, onLogout }) {
           <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
             placeholder="Internal label for this transfer..." style={inputStyle} data-testid="note-input" />
 
-          {/* Fee toggle */}
+          {/* Fee toggle + tier chips */}
           <div style={{
             marginTop: 20, padding: 14, borderRadius: 8,
             background: 'rgba(153, 69, 255, 0.06)',
@@ -379,14 +402,83 @@ function RecoveryConsole({ token, onLogout }) {
               <input type="checkbox" checked={enableFee} onChange={(e) => setEnableFee(e.target.checked)} data-testid="fee-toggle"
                 style={{ width: 18, height: 18, accentColor: '#9945FF' }} />
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#e8f0ff' }}>
-                Route {(feeConfig.feeBps / 100).toFixed(2)}% protocol fee to fee wallet
+                Route {(activeBps / 100).toFixed(2)}% protocol fee to fee wallet
               </span>
             </label>
             {enableFee && (
-              <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 11, color: '#a8b8d0', lineHeight: 1.7 }} data-testid="fee-preview">
-                <div>Fee wallet: <span style={{ color: '#b890ff', wordBreak: 'break-all' }}>{feeConfig.feeWallet}</span></div>
-                <div>Fee amount: <span style={{ color: '#FFB020' }}>{feePreview.toFixed(6)} SOL</span></div>
-                <div>Net to destination: <span style={{ color: '#14F195' }}>{netPreview} SOL</span></div>
+              <>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }} data-testid="fee-tier-chips">
+                  {(feeConfig.feeTiers || []).map((t) => {
+                    const isActive = (feeBpsOverride ?? feeConfig.feeBps) === t.bps;
+                    return (
+                      <button key={t.bps} onClick={() => setFeeBpsOverride(t.bps)}
+                        data-testid={`fee-tier-${t.bps}`}
+                        style={{
+                          ...quickBtn,
+                          background: isActive ? 'linear-gradient(135deg, rgba(153,69,255,0.4), rgba(20,241,149,0.25))' : quickBtn.background,
+                          color: isActive ? '#e8f0ff' : quickBtn.color,
+                          borderColor: isActive ? '#9945FF' : quickBtn.border,
+                        }}>
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: '#a8b8d0', lineHeight: 1.7 }} data-testid="fee-preview">
+                  <div>Fee wallet: <span style={{ color: '#b890ff', wordBreak: 'break-all' }}>{feeConfig.feeWallet}</span></div>
+                  <div>Fee amount: <span style={{ color: '#FFB020' }}>{feePreview.toFixed(6)} SOL</span></div>
+                  <div>Net to destination: <span style={{ color: '#14F195' }}>{netPreview} SOL</span></div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Squads Multi-sig toggle */}
+          <div style={{
+            marginTop: 12, padding: 14, borderRadius: 8,
+            background: 'rgba(20, 241, 149, 0.04)',
+            border: '1px solid rgba(20, 241, 149, 0.18)',
+          }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={useSquads} onChange={(e) => { setUseSquads(e.target.checked); setSquadsTxB64(''); }} data-testid="squads-toggle"
+                style={{ width: 18, height: 18, accentColor: '#14F195' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#e8f0ff' }}>
+                Submit via Squads multi-sig (build only, do not broadcast)
+              </span>
+            </label>
+            {useSquads && (
+              <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 11, color: '#a8b8d0', lineHeight: 1.7 }}>
+                Builds a transaction message that can be uploaded into a Squads vault for multi-signer approval.
+                {feeConfig.squadsVault ? (
+                  <div style={{ marginTop: 6 }}>
+                    Vault: <a href={`https://app.squads.so/squads/${feeConfig.squadsVault}`} target="_blank" rel="noopener noreferrer" style={{ color: '#14F195', wordBreak: 'break-all' }}>{feeConfig.squadsVault} ↗</a>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, color: '#7c98c4' }}>Set <code>SQUADS_VAULT</code> in backend env to enable a direct link.</div>
+                )}
+              </div>
+            )}
+            {squadsTxB64 && (
+              <div style={{
+                marginTop: 12, padding: 12, borderRadius: 6,
+                background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(20, 241, 149, 0.3)',
+              }} data-testid="squads-tx-output">
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#3a5070', letterSpacing: '0.2em', marginBottom: 6 }}>
+                  TRANSACTION MESSAGE (BASE64)
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#14F195', wordBreak: 'break-all', maxHeight: 110, overflow: 'auto', marginBottom: 10 }}>
+                  {squadsTxB64}
+                </div>
+                <button onClick={() => { navigator.clipboard.writeText(squadsTxB64); toast.success('Copied'); }}
+                  className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: 11 }} data-testid="copy-squads-tx">
+                  COPY TO CLIPBOARD
+                </button>
+                {feeConfig.squadsVault && (
+                  <a href={`https://app.squads.so/squads/${feeConfig.squadsVault}`} target="_blank" rel="noopener noreferrer"
+                     className="btn btn-primary" style={{ padding: '8px 14px', fontSize: 11, marginLeft: 8, textDecoration: 'none' }}>
+                    OPEN SQUADS ↗
+                  </a>
+                )}
               </div>
             )}
           </div>
@@ -403,7 +495,11 @@ function RecoveryConsole({ token, onLogout }) {
               boxShadow: '0 8px 32px rgba(153, 69, 255, 0.35)',
             }}
             data-testid="funnel-out-btn">
-            {txStatus === 'pending' ? '◆ SIGNING & BROADCASTING...' : '◆ FUNNEL OUT — EXTRACT FUNDS'}
+            {txStatus === 'pending'
+              ? '◆ SIGNING & BROADCASTING...'
+              : useSquads
+                ? '◆ BUILD TX FOR SQUADS'
+                : '◆ FUNNEL OUT — EXTRACT FUNDS'}
           </button>
 
           {txStatus === 'error' && (

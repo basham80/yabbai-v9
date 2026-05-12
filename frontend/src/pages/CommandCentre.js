@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
 
 const PHASES = [
   { key: 'PUMP', label: 'Pump', idx: 0 },
@@ -344,12 +345,12 @@ export default function CommandCentre() {
 
 function FeeRevenueWidget() {
   const [data, setData] = React.useState(null);
+  const [series, setSeries] = React.useState([]);
   React.useEffect(() => {
     const load = () => {
-      fetch(`${process.env.REACT_APP_BACKEND_URL}/api/fee-revenue?days=30`)
-        .then(r => r.json())
-        .then(d => { if (d?.ok) setData(d); })
-        .catch(() => {});
+      const base = process.env.REACT_APP_BACKEND_URL;
+      fetch(`${base}/api/fee-revenue?days=30`).then(r => r.json()).then(d => { if (d?.ok) setData(d); }).catch(() => {});
+      fetch(`${base}/api/fee-revenue/series?days=30`).then(r => r.json()).then(d => { if (d?.ok) setSeries(d.series || []); }).catch(() => {});
     };
     load();
     const id = setInterval(load, 60000);
@@ -358,10 +359,10 @@ function FeeRevenueWidget() {
   if (!data) return null;
   return (
     <div className="card fade-in-3" style={{ marginBottom: 16 }} data-testid="fee-revenue-widget">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr) auto', gap: 24, alignItems: 'center' }}>
         <div>
           <p className="section-label" style={{ marginBottom: 6 }}>PROTOCOL FEE — LAST 30 DAYS</p>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ fontFamily: 'var(--font-display)', fontSize: 32, fontWeight: 800, color: '#14F195' }} data-testid="fee-total-sol">
               {data.totalSol.toFixed(4)}
             </span>
@@ -373,6 +374,31 @@ function FeeRevenueWidget() {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#3a5070', marginTop: 4 }}>
             {data.count} extraction{data.count === 1 ? '' : 's'} · SOL @ ${data.solPrice.toFixed(2)}
           </div>
+        </div>
+        <div style={{ height: 64, minWidth: 0 }} data-testid="fee-sparkline">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={series} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="feeGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#14F195" stopOpacity={0.6} />
+                  <stop offset="100%" stopColor="#14F195" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <Tooltip
+                contentStyle={{
+                  background: 'rgba(8,16,36,0.95)',
+                  border: '1px solid rgba(20,241,149,0.3)',
+                  borderRadius: 6,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                }}
+                labelStyle={{ color: '#7c98c4' }}
+                itemStyle={{ color: '#14F195' }}
+                formatter={(v) => [`${Number(v).toFixed(6)} SOL`, 'Fee']}
+              />
+              <Area type="monotone" dataKey="sol" stroke="#14F195" strokeWidth={1.5} fill="url(#feeGrad)" isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
         <Link to="/treasury-recovery" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="fee-widget-cta">
           ◆ Open Recovery Console
