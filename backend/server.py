@@ -511,6 +511,8 @@ class RecoveryRecordRequest(BaseModel):
     feeAmount: Optional[float] = 0
     note: Optional[str] = ""
     signer: Optional[str] = None
+    referralSlug: Optional[str] = None
+    referralAmount: Optional[float] = 0
 
 @api_router.post("/recovery/record")
 async def recovery_record(req: RecoveryRecordRequest):
@@ -521,6 +523,8 @@ async def recovery_record(req: RecoveryRecordRequest):
         "amount": req.amount,
         "destination": req.destination,
         "feeAmount": req.feeAmount or 0,
+        "referralSlug": (req.referralSlug or None),
+        "referralAmount": req.referralAmount or 0,
         "note": req.note or "",
         "signer": req.signer,
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -680,7 +684,48 @@ async def public_fee_og():
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
-    return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
+    return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=60"})
+
+# ── Referral registry ────────────────────────────────────────────────────────
+class ReferralRegisterRequest(BaseModel):
+    slug: str
+    wallet: str
+
+@api_router.post("/referral/register")
+async def referral_register(req: ReferralRegisterRequest):
+    slug = (req.slug or "").strip().lower()
+    if not slug or not slug.isalnum() or len(slug) < 3 or len(slug) > 24:
+        raise HTTPException(status_code=400, detail="Slug must be 3–24 alphanumeric chars")
+    if not req.wallet or len(req.wallet) < 32:
+        raise HTTPException(status_code=400, detail="Invalid wallet address")
+    existing = await db.referrals.find_one({"slug": slug}, {"_id": 0})
+    if existing and existing.get("wallet") != req.wallet:
+        raise HTTPException(status_code=409, detail="Slug already taken")
+    await db.referrals.update_one(
+        {"slug": slug},
+        {"$set": {"slug": slug, "wallet": req.wallet, "createdAt": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "slug": slug, "wallet": req.wallet}
+
+@api_router.get("/referral/{slug}")
+async def referral_lookup(slug: str):
+    doc = await db.referrals.find_one({"slug": slug.lower()}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Unknown referral")
+    return {"ok": True, **doc}
+
+@api_router.get("/referral/{slug}/stats")
+async def referral_stats(slug: str):
+    """Aggregate fee earnings credited to a referral slug."""
+    pipeline = [
+        {"$match": {"referralSlug": slug.lower(), "referralAmount": {"$gt": 0}}},
+        {"$group": {"_id": None, "totalSol": {"$sum": "$referralAmount"}, "count": {"$sum": 1}}},
+    ]
+    agg = await db.recovery_history.aggregate(pipeline).to_list(length=1)
+    total = float(agg[0]["totalSol"]) if agg else 0.0
+    count = int(agg[0]["count"]) if agg else 0
+    return {"ok": True, "slug": slug.lower(), "totalSol": total, "count": count}
 
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)

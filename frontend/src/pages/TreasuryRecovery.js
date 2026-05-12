@@ -106,6 +106,24 @@ function RecoveryConsole({ token, onLogout }) {
   const [useSquads, setUseSquads] = useState(false);
   const [squadsTxB64, setSquadsTxB64] = useState('');
   const [squadsVault, setSquadsVault] = useState(() => localStorage.getItem('yabbai_squads_vault') || '');
+  // Referral capture (?ref=slug → resolved to wallet via backend)
+  const [referralSlug, setReferralSlug] = useState(() => {
+    try {
+      const u = new URL(window.location.href);
+      const s = (u.searchParams.get('ref') || '').toLowerCase();
+      if (s) localStorage.setItem('yabbai_ref', s);
+      return s || localStorage.getItem('yabbai_ref') || '';
+    } catch { return ''; }
+  });
+  const [referralWallet, setReferralWallet] = useState(null);
+
+  useEffect(() => {
+    if (!referralSlug) { setReferralWallet(null); return; }
+    fetch(`${BACKEND}/api/referral/${encodeURIComponent(referralSlug)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setReferralWallet(d?.wallet || null))
+      .catch(() => setReferralWallet(null));
+  }, [referralSlug]);
   const [phantomConnected, setPhantomConnected] = useState(false);
   const [phantomKey, setPhantomKey] = useState(null);
   const [txStatus, setTxStatus] = useState('idle');
@@ -202,6 +220,11 @@ function RecoveryConsole({ token, onLogout }) {
 
     const activeBps = feeBpsOverride ?? feeConfig.feeBps;
     const feeAmount = enableFee ? +(amt * activeBps / 10000).toFixed(9) : 0;
+    // 20% of the protocol fee is credited to the referral wallet (if valid)
+    const referralAmount = (enableFee && referralWallet && feeAmount > 0)
+      ? +(feeAmount * 0.2).toFixed(9)
+      : 0;
+    const protocolFeeNet = feeAmount - referralAmount;
     const netAmount = amt - feeAmount;
 
     setTxStatus('pending');
@@ -219,8 +242,15 @@ function RecoveryConsole({ token, onLogout }) {
         tx.add(SystemProgram.transfer({
           fromPubkey,
           toPubkey: new PublicKey(feeConfig.feeWallet),
-          lamports: Math.round(feeAmount * LAMPORTS_PER_SOL),
+          lamports: Math.round(protocolFeeNet * LAMPORTS_PER_SOL),
         }));
+        if (referralAmount > 0 && referralWallet) {
+          tx.add(SystemProgram.transfer({
+            fromPubkey,
+            toPubkey: new PublicKey(referralWallet),
+            lamports: Math.round(referralAmount * LAMPORTS_PER_SOL),
+          }));
+        }
       }
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
@@ -244,6 +274,8 @@ function RecoveryConsole({ token, onLogout }) {
       const record = {
         signature, amount: amt, destination,
         feeAmount, note, signer: fromPubkey.toString(),
+        referralSlug: referralWallet ? referralSlug : null,
+        referralAmount,
       };
       try {
         const r = await fetch(`${BACKEND}/api/recovery/record`, {
@@ -296,6 +328,11 @@ function RecoveryConsole({ token, onLogout }) {
           <span className="badge badge-purple">SECURE OPS</span>
           <span className="badge badge-amber">MAINNET</span>
           <span className="badge badge-green">● AUTHENTICATED</span>
+          {referralSlug && (
+            <span className="badge badge-purple" data-testid="referral-pill" title={referralWallet || 'Unknown referral'}>
+              REF · {referralSlug.toUpperCase()} {referralWallet ? '✓' : '?'}
+            </span>
+          )}
           <button onClick={onLogout} className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: 11, marginLeft: 'auto' }} data-testid="recovery-logout">
             LOCK
           </button>
