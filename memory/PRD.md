@@ -48,9 +48,11 @@ Build complete YabbAI-Brain production app from "profitr-main (2).zip":
 - Test IDs on every interactive element
 
 ## P1 Backlog
-- Token-live-stats: Birdeye public endpoint is rate-limited — add Helius/CoinGecko fallback
-- Mission page: integrate Emergent LLM key (Claude Sonnet 4.5) via emergentintegrations
-- Caching layer (TTL) for jupiter-price and solana-balance
+- ✅ Server-side cache (TTL 8s) for jupiter-price and solana-balance — IMPLEMENTED
+- ✅ Mission page wired to Emergent LLM (Claude Sonnet 4.5 via emergentintegrations) — IMPLEMENTED
+- ✅ Password protect /treasury-recovery (BashChill1980! via bcrypt + session token) — IMPLEMENTED
+- ✅ Recovery transaction history (MongoDB collection `recovery_history`, displayed on page) — IMPLEMENTED
+- ✅ Optional 0.25% protocol fee toggle (FEE_BPS=25, FEE_WALLET configurable in .env) — IMPLEMENTED
 - Loading skeletons for treasury/wallet balance fetches
 
 ## P2 Backlog

@@ -6,6 +6,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import httpx
+import time
+import secrets
+import bcrypt
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
@@ -21,6 +24,39 @@ db = client[os.environ['DB_NAME']]
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+# ── In-memory TTL cache (8s) for price + balance ─────────────────────────────
+_CACHE: dict[str, tuple[float, object]] = {}
+_CACHE_TTL = 8.0  # seconds
+
+def cache_get(key: str):
+    hit = _CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _CACHE_TTL:
+        return hit[1]
+    return None
+
+def cache_set(key: str, value):
+    _CACHE[key] = (time.time(), value)
+
+# ── Recovery session tokens (in-memory) ──────────────────────────────────────
+_RECOVERY_TOKENS: dict[str, float] = {}  # token -> expiry epoch
+_RECOVERY_TTL = 60 * 60 * 2  # 2 hours
+
+def issue_recovery_token() -> str:
+    t = secrets.token_urlsafe(32)
+    _RECOVERY_TOKENS[t] = time.time() + _RECOVERY_TTL
+    return t
+
+def verify_recovery_token(token: Optional[str]) -> bool:
+    if not token:
+        return False
+    exp = _RECOVERY_TOKENS.get(token)
+    if not exp:
+        return False
+    if time.time() > exp:
+        _RECOVERY_TOKENS.pop(token, None)
+        return False
+    return True
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
@@ -102,7 +138,11 @@ async def get_jupiter_price(mint: str):
     try:
         if not mint or len(mint) < 32:
             return {"ok": False, "price": None, "error": "Invalid mint address"}
-        
+
+        cached = cache_get(f"price:{mint}")
+        if cached is not None:
+            return cached
+
         async with httpx.AsyncClient(timeout=8.0) as client_h:
             resp = await client_h.get(
                 f"https://lite-api.jup.ag/price/v3",
@@ -114,8 +154,11 @@ async def get_jupiter_price(mint: str):
                 price_data = data.get(mint, {})
                 price = price_data.get("usdPrice")
                 if price is not None:
-                    return {"ok": True, "price": float(price), "mint": mint}
-                return {"ok": True, "price": None, "mint": mint}
+                    out = {"ok": True, "price": float(price), "mint": mint}
+                else:
+                    out = {"ok": True, "price": None, "mint": mint}
+                cache_set(f"price:{mint}", out)
+                return out
             return {"ok": False, "price": None, "error": f"Jupiter returned {resp.status_code}"}
     except httpx.TimeoutException:
         return {"ok": False, "price": None, "error": "Jupiter API timeout"}
@@ -132,7 +175,11 @@ async def get_solana_balance(owner: str):
     try:
         if not owner or len(owner) < 32:
             return {"ok": False, "error": "Invalid owner address"}
-        
+
+        cached = cache_get(f"bal:{owner}")
+        if cached is not None:
+            return cached
+
         async with httpx.AsyncClient(timeout=10.0) as client_h:
             # Get SOL balance
             sol_resp = await client_h.post(
@@ -175,7 +222,9 @@ async def get_solana_balance(owner: str):
                 if mint and amount_raw is not None:
                     tokens.append({"mint": mint, "amount": amount_raw, "decimals": decimals})
             
-            return {"ok": True, "sol": sol_balance, "tokens": tokens}
+            out = {"ok": True, "sol": sol_balance, "tokens": tokens}
+            cache_set(f"bal:{owner}", out)
+            return out
     except httpx.TimeoutException:
         return {"ok": False, "sol": 0, "tokens": [], "error": "RPC timeout"}
     except Exception as e:
@@ -313,7 +362,8 @@ async def health_check():
     return {"status": "healthy", "service": "yabbai-brain", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 # ── AI Mission Generator (Real LLM) ──────────────────────────────────────────
-# Uses Anthropic Claude (or falls back to local if no key)
+# Uses Emergent Universal LLM Key (Claude Sonnet 4.5) with local fallback.
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GROK_XAI_API_KEY = os.environ.get("GROK_XAI_API_KEY")
 
@@ -358,6 +408,21 @@ Keep it under 25 lines. Make it look like real autonomous agent code."""
             return {"ok": True, "plan": plan, "source": "anthropic"}
         except Exception as e:
             logger.error(f"Anthropic error: {e}")
+
+    # Emergent Universal Key → Claude Sonnet 4.5 via emergentintegrations
+    if EMERGENT_LLM_KEY:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            chat = (
+                LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"mission-{int(time.time())}", system_message="You are YabbAI, an elite autonomous Solana trading agent.")
+                .with_model("anthropic", "claude-sonnet-4-5-20250929")
+            )
+            resp = await chat.send_message(UserMessage(text=prompt))
+            plan = (resp or "").strip()
+            if plan:
+                return {"ok": True, "plan": plan, "source": "emergent-claude-sonnet-4.5"}
+        except Exception as e:
+            logger.error(f"Emergent LLM error: {e}")
 
     if GROK_XAI_API_KEY:
         try:
@@ -406,6 +471,69 @@ mission.deploy()
 // Daily yield target: ${round(req.autonomy * 2.8 + 50, 2)}""",
         "source": "local"
     }
+
+# ── Treasury Recovery: auth, config, history ─────────────────────────────────
+TREASURY_PWD_HASH = os.environ.get("TREASURY_RECOVERY_PASSWORD_HASH", "")
+FEE_WALLET = os.environ.get("FEE_WALLET", "8e6ogxfUnj6YXHp1tR4Kj1ytSkmEhLhi2fbKqRVxUHPi")
+FEE_BPS = int(os.environ.get("FEE_BPS", "25"))  # 25 bps = 0.25%
+
+class RecoveryAuthRequest(BaseModel):
+    password: str
+
+@api_router.post("/recovery/auth")
+async def recovery_auth(req: RecoveryAuthRequest):
+    if not TREASURY_PWD_HASH:
+        raise HTTPException(status_code=503, detail="Recovery password not configured")
+    try:
+        ok = bcrypt.checkpw(req.password.encode("utf-8"), TREASURY_PWD_HASH.encode("utf-8"))
+    except Exception:
+        ok = False
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"ok": True, "token": issue_recovery_token(), "expires_in": _RECOVERY_TTL}
+
+@api_router.get("/recovery/config")
+async def recovery_config():
+    return {
+        "feeWallet": FEE_WALLET,
+        "feeBps": FEE_BPS,
+        "treasury": "7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR",
+        "secureWallet": "8e6ogxfUnj6YXHp1tR4Kj1ytSkmEhLhi2fbKqRVxUHPi",
+    }
+
+class RecoveryRecordRequest(BaseModel):
+    token: str
+    signature: str
+    amount: float
+    destination: str
+    feeAmount: Optional[float] = 0
+    note: Optional[str] = ""
+    signer: Optional[str] = None
+
+@api_router.post("/recovery/record")
+async def recovery_record(req: RecoveryRecordRequest):
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    doc = {
+        "signature": req.signature,
+        "amount": req.amount,
+        "destination": req.destination,
+        "feeAmount": req.feeAmount or 0,
+        "note": req.note or "",
+        "signer": req.signer,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.recovery_history.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "record": doc}
+
+@api_router.get("/recovery/history")
+async def recovery_history(token: str, limit: int = 20):
+    if not verify_recovery_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    cursor = db.recovery_history.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    return {"ok": True, "items": items}
 
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
