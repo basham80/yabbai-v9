@@ -70,9 +70,14 @@ export default function KaspaPoolBridge({ walletPubkey }) {
             Bridge to <a href="/downloads/yabbai_v9_web3.zip" style={{ color: '#14F195' }}>YABBAI v9.1 desktop miner</a> via WoolyPooly
           </div>
         </div>
-        <button onClick={fetchAll} disabled={loading || !isValidKaspa} className="btn btn-sm btn-outline" data-testid="kaspa-refresh-btn">
-          {loading ? 'SYNCING…' : 'REFRESH'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <a href="/withdraw-kaspa" className="btn btn-sm btn-green" style={{ textDecoration: 'none' }} data-testid="withdraw-kas-link">
+            WITHDRAW / SWAP KAS →
+          </a>
+          <button onClick={fetchAll} disabled={loading || !isValidKaspa} className="btn btn-sm btn-outline" data-testid="kaspa-refresh-btn">
+            {loading ? 'SYNCING…' : 'REFRESH'}
+          </button>
+        </div>
       </div>
 
       <p style={{ fontSize: 11, color: '#7c98c4', fontFamily: 'var(--font-mono)', lineHeight: 1.5, marginBottom: 12 }}>

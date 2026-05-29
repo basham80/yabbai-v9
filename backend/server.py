@@ -1843,6 +1843,132 @@ async def pool_kaspa_sessions(address: str, limit: int = 30):
         "reports": int(agg[0]["reports"]) if agg else 0,
     }}
 
+# ── KAS → SOL/USDC swap bridge via ChangeNOW (no-KYC, no API key needed) ─────
+CHANGENOW_BASE = "https://api.changenow.io/v1"
+CHANGENOW_API_KEY = os.environ.get("CHANGENOW_API_KEY", "")  # optional partner key
+
+@api_router.get("/swap/kaspa/quote")
+async def swap_kaspa_quote(amountKas: float, targetCurrency: str = "sol"):
+    """Live quote from ChangeNOW: how much `targetCurrency` for X KAS."""
+    if amountKas <= 0:
+        raise HTTPException(status_code=400, detail="amountKas must be > 0")
+    target = targetCurrency.lower()
+    pair = f"kas_{target}"
+    cache_key = f"swap-quote:{amountKas}:{target}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            # Get min amount first
+            rmin = await ch.get(f"{CHANGENOW_BASE}/min-amount/{pair}")
+            min_amt = None
+            if rmin.status_code == 200:
+                try:
+                    min_amt = float(rmin.json().get("minAmount") or 0)
+                except Exception:
+                    pass
+            # Estimate
+            r = await ch.get(f"{CHANGENOW_BASE}/exchange-amount/{amountKas}/{pair}")
+            if r.status_code != 200:
+                return {"ok": False, "error": f"ChangeNOW returned {r.status_code}", "raw": r.text[:200], "minAmount": min_amt}
+            data = r.json()
+            if "estimatedAmount" not in data:
+                return {"ok": False, "error": data.get("error") or data.get("message") or "No estimate returned",
+                        "minAmount": min_amt, "raw": str(data)[:200]}
+            estimated_out = float(data["estimatedAmount"])
+            out = {
+                "ok": True,
+                "fromAmount": amountKas,
+                "fromCurrency": "KAS",
+                "toAmount": estimated_out,
+                "toCurrency": target.upper(),
+                "rate": estimated_out / amountKas if amountKas > 0 else 0,
+                "minAmount": min_amt,
+                "speed": data.get("transactionSpeedForecast"),
+                "provider": "changenow",
+                "fetchedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            cache_set(cache_key, out)
+            return out
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "ChangeNOW timeout"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+class SwapInitiateRequest(BaseModel):
+    amountKas: float
+    targetCurrency: str = "sol"
+    destinationAddress: str
+    refundKaspaAddress: Optional[str] = None
+
+@api_router.post("/swap/kaspa/initiate")
+async def swap_kaspa_initiate(req: SwapInitiateRequest):
+    """Creates a ChangeNOW exchange. Returns the Kaspa deposit address."""
+    if req.amountKas <= 0:
+        raise HTTPException(status_code=400, detail="amountKas must be > 0")
+    if not req.destinationAddress or len(req.destinationAddress) < 30:
+        raise HTTPException(status_code=400, detail="Invalid destinationAddress")
+
+    target = req.targetCurrency.lower()
+    api_key = CHANGENOW_API_KEY or "9bcfe05ad07cb1ee5e58a36e98d40fbb39f4f1c1de27c5bfbf2ee2f5e7c52e85"  # public demo key (rate-limited)
+    payload = {
+        "from": "kas",
+        "to": target,
+        "amount": str(req.amountKas),
+        "address": req.destinationAddress,
+        "refundAddress": req.refundKaspaAddress or "",
+        "flow": "standard",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as ch:
+            r = await ch.post(f"{CHANGENOW_BASE}/transactions/{api_key}",
+                              json=payload, headers={"Content-Type": "application/json"})
+            if r.status_code not in (200, 201):
+                return {"ok": False, "error": f"ChangeNOW returned {r.status_code}", "raw": r.text[:300]}
+            data = r.json()
+            doc = {
+                "exchangeId": data.get("id"),
+                "kaspaDeposit": data.get("payinAddress"),
+                "destination": req.destinationAddress,
+                "amountKas": req.amountKas,
+                "expectedOut": float(data.get("amount") or 0),
+                "targetCurrency": target,
+                "status": data.get("status", "waiting"),
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.swap_exchanges.insert_one(dict(doc))
+            return {"ok": True, **doc}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "ChangeNOW timeout"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/swap/kaspa/status/{exchange_id}")
+async def swap_kaspa_status(exchange_id: str):
+    api_key = CHANGENOW_API_KEY or "9bcfe05ad07cb1ee5e58a36e98d40fbb39f4f1c1de27c5bfbf2ee2f5e7c52e85"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            r = await ch.get(f"{CHANGENOW_BASE}/transactions/{exchange_id}/{api_key}")
+            if r.status_code != 200:
+                return {"ok": False, "error": f"ChangeNOW returned {r.status_code}"}
+            data = r.json()
+            await db.swap_exchanges.update_one(
+                {"exchangeId": exchange_id},
+                {"$set": {"status": data.get("status"), "updatedAt": datetime.now(timezone.utc).isoformat()}}
+            )
+            return {"ok": True, "exchangeId": exchange_id, "status": data.get("status"),
+                    "amountFrom": data.get("expectedSendAmount"), "amountTo": data.get("expectedReceiveAmount"),
+                    "txFrom": data.get("payinHash"), "txTo": data.get("payoutHash")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/swap/kaspa/history")
+async def swap_kaspa_history(limit: int = 20):
+    cursor = db.swap_exchanges.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    return {"ok": True, "items": items}
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 
