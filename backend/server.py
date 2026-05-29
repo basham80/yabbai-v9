@@ -2210,6 +2210,238 @@ async def growth_listing_readiness(mint: str = GLORP_MINT):
         "readinessScore": round(passed / total * 100) if total > 0 else 0,
     }
 
+# ── Multi-LLM Agentic Router + Autonomous Dev Agent ──────────────────────────
+# Different tasks → different models. Routes via Emergent Universal Key.
+AGENT_MODEL_MAP = {
+    "copy_short":    ("anthropic", "claude-haiku-4-5-20251001"),   # fast, ≤30s
+    "copy_long":     ("anthropic", "claude-sonnet-4-5-20250929"),  # thread analysis, ~60s
+    "analysis":      ("anthropic", "claude-sonnet-4-5-20250929"),  # rug risk, opportunity
+    "listing_form":  ("openai", "gpt-4o-mini"),                    # structured form fill
+    "meme_prompt":   ("anthropic", "claude-haiku-4-5-20251001"),   # punchy image prompts
+    "whale_dm":      ("anthropic", "claude-haiku-4-5-20251001"),   # personalized DM
+    "strategy":      ("anthropic", "claude-sonnet-4-5-20250929"),  # multi-step plan
+}
+
+TASK_SYSTEM_PROMPTS = {
+    "analysis": (
+        "You are a senior crypto analyst. You evaluate tokens against rug-risk + organic-growth signals. "
+        "You NEVER promise prices. You output ONLY structured findings as markdown sections: "
+        "## Verdict (one of: STRONG / DEVELOPING / WEAK / AVOID), ## Risk Signals, ## Opportunity Signals, "
+        "## Top 3 Actions (concrete, ordered). Keep total <800 tokens."
+    ),
+    "listing_form": (
+        "You are filling out an exchange listing application. Output a structured response with "
+        "every section a CoinMarketCap/CoinGecko application asks for, drawn ONLY from the provided "
+        "on-chain data. If a field is missing, say 'TODO: <how to obtain>'. Never invent metrics."
+    ),
+    "meme_prompt": (
+        "You are a memecoin art director. Output 5 image prompts for AI image generation tools "
+        "(Nano-Banana / Sora / DALL-E). Each prompt is ONE punchy sentence with specific visual style cues. "
+        "No price predictions, no celebrity likenesses. Output as a numbered list only."
+    ),
+    "whale_dm": (
+        "You are a community manager writing a friendly DM to a wallet that just bought the token. "
+        "Be warm, brief (≤3 sentences), reference the actual buy amount and price, and invite them "
+        "to the Telegram. NO promises of returns. NO pump language. Output the DM only, no preamble."
+    ),
+    "strategy": (
+        "You are an autonomous growth strategist. Output a 24-hour action plan with timestamps "
+        "(in hours from now), each step assigned to a specific role (DEV / MARKETING / COMMUNITY / LP). "
+        "Format: hh:00 — ROLE — Action. Maximum 10 steps. All actions must be legal and organic."
+    ),
+}
+
+class AgentRouteRequest(BaseModel):
+    task: str  # 'analysis' | 'listing_form' | 'meme_prompt' | 'whale_dm' | 'strategy' | 'copy_short' | 'copy_long'
+    context: dict = {}
+    mint: Optional[str] = None
+    tone: Optional[str] = "degen"
+
+@api_router.post("/agent/route")
+async def agent_route(req: AgentRouteRequest):
+    """Smart router: picks the best model for the task and runs it."""
+    if req.task not in AGENT_MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown task. Choose from: {list(AGENT_MODEL_MAP.keys())}")
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY not set")
+
+    provider, model = AGENT_MODEL_MAP[req.task]
+    system = TASK_SYSTEM_PROMPTS.get(req.task,
+        "You are a helpful agent. Respond concisely and factually based only on provided data.")
+
+    # Build the prompt from context
+    ctx_lines = []
+    for k, v in (req.context or {}).items():
+        ctx_lines.append(f"{k}: {v}")
+    prompt = (
+        f"Task: {req.task}\n"
+        f"Tone: {req.tone}\n\n"
+        f"Context (real on-chain data):\n" + "\n".join(ctx_lines)
+        if ctx_lines else f"Task: {req.task}\nNo additional context provided."
+    )
+
+    started = time.time()
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = (
+            LlmChat(api_key=EMERGENT_LLM_KEY,
+                    session_id=f"agent-{req.task}-{int(time.time())}",
+                    system_message=system)
+            .with_model(provider, model)
+        )
+        reply = await chat.send_message(UserMessage(text=prompt))
+        out_text = str(reply)
+        elapsed = round(time.time() - started, 2)
+        # Log to agent_runs
+        await db.agent_runs.insert_one({
+            "task": req.task, "model": model, "provider": provider,
+            "elapsedSec": elapsed,
+            "outputLen": len(out_text),
+            "mint": req.mint,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        return {
+            "ok": True, "task": req.task, "model": model, "provider": provider,
+            "elapsedSec": elapsed, "output": out_text,
+        }
+    except Exception as e:
+        logger.error(f"agent_route {req.task} error: {e}")
+        return {"ok": False, "error": str(e), "task": req.task, "model": model}
+
+# ── Autonomous Dev Agent (think → act → log) ─────────────────────────────────
+class AutonomousCycleRequest(BaseModel):
+    mint: str = GLORP_MINT
+
+@api_router.post("/agent/autonomous-cycle")
+async def autonomous_cycle(req: AutonomousCycleRequest):
+    """Full think-act loop: pull live data → analyze → strategize → produce artifacts.
+    Runs sequentially using the right model for each step. Persists the entire cycle."""
+    if not EMERGENT_LLM_KEY:
+        return {"ok": False, "error": "EMERGENT_LLM_KEY not set"}
+
+    cycle_id = secrets.token_urlsafe(10)
+    cycle_started = datetime.now(timezone.utc).isoformat()
+    steps = []
+
+    # Step 1: Pull live overview
+    ov = await growth_overview(req.mint)
+    if not ov.get("ok"):
+        return {"ok": False, "error": "overview fetch failed"}
+    steps.append({"step": "fetch_overview", "ok": True, "summary":
+                  f"LP=${ov['liquidityUsd']:.2f} · vol=${ov['volume24h']:.2f} · top10={ov.get('top10Pct', 0)}%"})
+
+    # Helper to run an agent task
+    async def run_task(task, ctx, label):
+        try:
+            res = await agent_route(AgentRouteRequest(task=task, context=ctx, mint=req.mint))
+            steps.append({
+                "step": label, "ok": res.get("ok", False),
+                "model": res.get("model"), "elapsedSec": res.get("elapsedSec"),
+                "output": (res.get("output") or "")[:4000],
+            })
+            return res
+        except Exception as e:
+            steps.append({"step": label, "ok": False, "error": str(e)})
+            return None
+
+    base_ctx = {
+        "symbol": ov.get("symbol"), "mint": req.mint,
+        "price": f"${ov['price']:.10f}",
+        "liquidityUsd": f"${ov['liquidityUsd']:.2f}",
+        "volume24h": f"${ov['volume24h']:.2f}",
+        "priceChange24h": f"{ov['priceChange24h']:.2f}%",
+        "buys24h": ov['txns24h'].get('buys', 0),
+        "sells24h": ov['txns24h'].get('sells', 0),
+        "ageDays": ov.get("ageDays", 0),
+        "top10Pct": f"{ov.get('top10Pct', 0)}%",
+        "socials": len(ov.get("socials") or []),
+        "dex": ov.get("dex"),
+    }
+
+    # Step 2: Risk + Opportunity analysis (Sonnet)
+    await run_task("analysis", base_ctx, "analyze")
+
+    # Step 3: 24-hour strategy (Sonnet)
+    await run_task("strategy", base_ctx, "strategize")
+
+    # Step 4: Meme image prompts (Haiku)
+    await run_task("meme_prompt", base_ctx, "memes")
+
+    # Step 5: Listing application draft (GPT-4o-mini)
+    await run_task("listing_form", base_ctx, "listing_application")
+
+    cycle_doc = {
+        "id": cycle_id,
+        "mint": req.mint,
+        "startedAt": cycle_started,
+        "finishedAt": datetime.now(timezone.utc).isoformat(),
+        "overview": ov,
+        "steps": steps,
+        "stepCount": len(steps),
+        "successCount": sum(1 for s in steps if s.get("ok")),
+    }
+    await db.agent_cycles.insert_one(dict(cycle_doc))
+    cycle_doc.pop("_id", None)
+    return {"ok": True, "cycle": cycle_doc}
+
+@api_router.get("/agent/cycles")
+async def agent_cycles(mint: Optional[str] = None, limit: int = 20):
+    q = {} if not mint else {"mint": mint}
+    cursor = db.agent_cycles.find(q, {"_id": 0}).sort("startedAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    return {"ok": True, "items": items}
+
+@api_router.get("/agent/runs")
+async def agent_runs(limit: int = 50):
+    cursor = db.agent_runs.find({}, {"_id": 0}).sort("ts", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    pipeline = [
+        {"$group": {"_id": "$model", "runs": {"$sum": 1},
+                    "avgElapsedSec": {"$avg": "$elapsedSec"}}},
+        {"$sort": {"runs": -1}},
+    ]
+    agg = await db.agent_runs.aggregate(pipeline).to_list(length=20)
+    return {"ok": True, "items": items,
+            "byModel": [{"model": r["_id"], "runs": int(r["runs"]),
+                         "avgElapsedSec": round(float(r["avgElapsedSec"]), 2)} for r in agg]}
+
+@api_router.get("/agent/models")
+async def agent_models():
+    """List which task routes to which model."""
+    return {"ok": True, "routes": [
+        {"task": t, "provider": p, "model": m} for t, (p, m) in AGENT_MODEL_MAP.items()
+    ]}
+
+# Background autonomous cycle every 6 hours for the configured mint
+_AGENT_CYCLE_ACTIVE = {"stop": False, "started": False}
+
+async def _autonomous_cycle_loop():
+    logger.info("Autonomous dev agent loop started (6h interval)")
+    while not _AGENT_CYCLE_ACTIVE["stop"]:
+        try:
+            # Only run if there's at least one cycle in last 6h missed
+            last = await db.agent_cycles.find_one({}, {"_id": 0, "startedAt": 1}, sort=[("startedAt", -1)])
+            should_run = True
+            if last:
+                last_ts = datetime.fromisoformat(last["startedAt"].replace("Z", "+00:00"))
+                age_h = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
+                should_run = age_h >= 6.0
+            if should_run:
+                try:
+                    await autonomous_cycle(AutonomousCycleRequest(mint=GLORP_MINT))
+                except Exception as e:
+                    logger.warning(f"autonomous cycle background error: {e}")
+        except Exception as e:
+            logger.error(f"autonomous cycle loop error: {e}")
+        await asyncio.sleep(3600)  # check hourly, run when >=6h elapsed
+
+@app.on_event("startup")
+async def _start_autonomous_cycle():
+    if _AGENT_CYCLE_ACTIVE["started"]:
+        return
+    _AGENT_CYCLE_ACTIVE["started"] = True
+    asyncio.create_task(_autonomous_cycle_loop())
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

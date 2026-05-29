@@ -25,6 +25,13 @@ export default function GrowthConsole() {
   const [generating, setGenerating] = useState(false);
   const [marketing, setMarketing] = useState(null);
 
+  // Agent
+  const [cycleRunning, setCycleRunning] = useState(false);
+  const [cycles, setCycles] = useState([]);
+  const [runs, setRuns] = useState({ items: [], byModel: [] });
+  const [models, setModels] = useState([]);
+  const [activeCycle, setActiveCycle] = useState(null);
+
   // LP Inject
   const [lpAmount, setLpAmount] = useState('0.05');
   const [injecting, setInjecting] = useState(false);
@@ -54,6 +61,44 @@ export default function GrowthConsole() {
     const id = setInterval(() => { fetchOverview(); fetchReadiness(); }, 60000);
     return () => clearInterval(id);
   }, [fetchOverview, fetchReadiness]);
+
+  // Agent loaders
+  const loadAgent = useCallback(async () => {
+    try {
+      const [c, r, m] = await Promise.all([
+        fetch(`${BACKEND}/api/agent/cycles?mint=${GLORP_MINT}&limit=8`).then(x => x.json()),
+        fetch(`${BACKEND}/api/agent/runs?limit=30`).then(x => x.json()),
+        fetch(`${BACKEND}/api/agent/models`).then(x => x.json()),
+      ]);
+      if (c.ok) setCycles(c.items || []);
+      if (r.ok) { setRuns(r); }
+      if (m.ok) setModels(m.routes || []);
+    } catch {}
+  }, []);
+  useEffect(() => { loadAgent(); }, [loadAgent]);
+
+  const runAutonomousCycle = async () => {
+    setCycleRunning(true);
+    setActiveCycle(null);
+    try {
+      const r = await fetch(`${BACKEND}/api/agent/autonomous-cycle`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mint: GLORP_MINT }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setActiveCycle(d.cycle);
+        toast.success(`Cycle complete · ${d.cycle.successCount}/${d.cycle.stepCount} steps`);
+        loadAgent();
+      } else {
+        toast.error(d.error || 'Cycle failed');
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setCycleRunning(false);
+    }
+  };
 
   const generateMarketing = async () => {
     setGenerating(true);
@@ -171,6 +216,7 @@ export default function GrowthConsole() {
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
         {[
           { id: 'intel', label: '◆ INTELLIGENCE' },
+          { id: 'agent', label: '⚡ AUTONOMOUS AGENT' },
           { id: 'marketing', label: '✎ AI MARKETING' },
           { id: 'liquidity', label: '◯ LIQUIDITY' },
           { id: 'listing', label: '☉ CEX LISTING PATH' },
@@ -181,6 +227,113 @@ export default function GrowthConsole() {
           </button>
         ))}
       </div>
+
+      {/* TAB: AGENT */}
+      {tab === 'agent' && (
+        <div>
+          <div className="card" style={{ marginBottom: 14 }} data-testid="agent-controls">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+              <p className="section-label" style={{ margin: 0 }}>AUTONOMOUS DEV AGENT</p>
+              <span className="badge badge-green">RUNNING EVERY 6H</span>
+            </div>
+            <p style={{ fontSize: 12, color: '#7c98c4', fontFamily: 'var(--font-mono)', lineHeight: 1.5, marginBottom: 12 }}>
+              Multi-LLM router: each task goes to the model best at it. Cycle pulls live data → analyzes risk/opportunity → drafts 24h strategy → generates meme prompts → drafts CMC listing application.
+            </p>
+            <button onClick={runAutonomousCycle} disabled={cycleRunning} className="btn btn-green" style={{ width: '100%' }} data-testid="run-cycle-btn">
+              {cycleRunning ? '⚡ AGENT WORKING — analyze → strategize → memes → listing…' : '► RUN AUTONOMOUS CYCLE NOW'}
+            </button>
+          </div>
+
+          {/* Active cycle results */}
+          {activeCycle && (
+            <div className="card" style={{ marginBottom: 14 }} data-testid="active-cycle">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                <p className="section-label" style={{ margin: 0 }}>CYCLE #{activeCycle.id} · {activeCycle.successCount}/{activeCycle.stepCount}</p>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#7c98c4' }}>
+                  {new Date(activeCycle.startedAt).toLocaleString()}
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {activeCycle.steps.map((s, i) => (
+                  <details key={i} style={{
+                    padding: 10, borderRadius: 6,
+                    background: s.ok ? 'rgba(20,241,149,0.05)' : 'rgba(255,69,101,0.06)',
+                    border: `1px solid ${s.ok ? 'rgba(20,241,149,0.2)' : 'rgba(255,69,101,0.2)'}`,
+                  }}>
+                    <summary style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 12, color: '#e8f0ff' }}>
+                      {s.ok ? '✓' : '✗'} <b>{s.step}</b>
+                      {s.model && <span style={{ color: '#b890ff', marginLeft: 8 }}>· {s.model}</span>}
+                      {s.elapsedSec && <span style={{ color: '#7c98c4', marginLeft: 8 }}>· {s.elapsedSec}s</span>}
+                      {s.summary && <span style={{ color: '#14F195', marginLeft: 8 }}>· {s.summary}</span>}
+                    </summary>
+                    {s.output && (
+                      <pre style={{
+                        marginTop: 10, whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: 11,
+                        color: '#e8f0ff', maxHeight: 360, overflow: 'auto', lineHeight: 1.6,
+                      }}>{s.output}</pre>
+                    )}
+                    {s.error && (
+                      <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: '#ff4565' }}>{s.error}</div>
+                    )}
+                  </details>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Model routing table */}
+          <div className="grid-2">
+            <div className="card" data-testid="model-routes">
+              <p className="section-label" style={{ marginBottom: 10 }}>MODEL ROUTING</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {models.map(m => (
+                  <div key={m.task} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '8px 10px', borderRadius: 4, background: 'rgba(8,16,36,0.4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                    <span style={{ color: '#9945FF' }}>{m.task}</span>
+                    <span style={{ color: '#e8f0ff', textAlign: 'right' }}>{m.model}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="card" data-testid="model-usage">
+              <p className="section-label" style={{ marginBottom: 10 }}>USAGE BY MODEL</p>
+              {(runs.byModel || []).length === 0 ? (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#7c98c4' }}>No runs yet.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {runs.byModel.map(m => (
+                    <div key={m.model} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8, padding: '8px 10px', borderRadius: 4, background: 'rgba(8,16,36,0.4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                      <span style={{ color: '#e8f0ff' }}>{m.model}</span>
+                      <span style={{ color: '#14F195', textAlign: 'right' }}>{m.runs} runs</span>
+                      <span style={{ color: '#F5A623', textAlign: 'right' }}>avg {m.avgElapsedSec}s</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Recent cycles */}
+          {cycles.length > 0 && (
+            <div className="card" style={{ marginTop: 14 }} data-testid="cycles-history">
+              <p className="section-label" style={{ marginBottom: 10 }}>RECENT CYCLES</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {cycles.map(c => (
+                  <button key={c.id} onClick={() => setActiveCycle(c)} className="btn btn-outline" style={{
+                    display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr', gap: 10, padding: '8px 10px',
+                    fontFamily: 'var(--font-mono)', fontSize: 11, textAlign: 'left', alignItems: 'center',
+                  }}>
+                    <span style={{ color: '#b890ff' }}>#{c.id}</span>
+                    <span style={{ color: '#14F195' }}>{c.successCount || 0}/{c.stepCount || 0} steps</span>
+                    <span style={{ color: '#7c98c4' }}>{new Date(c.startedAt).toLocaleString()}</span>
+                    <span style={{ color: '#F5A623' }}>VIEW →</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* TAB: INTEL */}
       {tab === 'intel' && overview && (
