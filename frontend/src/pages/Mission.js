@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import toast from 'react-hot-toast';
 import EarningsRouter from '../components/EarningsRouter';
+
+const BACKEND = process.env.REACT_APP_BACKEND_URL;
 
 const MISSION_TYPES = [
   'Liquidity Mining Protocol',
@@ -60,7 +63,66 @@ export default function Mission() {
   const [thinking, setThinking] = useState(false);
   const [missionPlan, setMissionPlan] = useState('');
   const [deployCount, setDeployCount] = useState(42);
+  const [deploying, setDeploying] = useState(false);
+  const [lastMission, setLastMission] = useState(null);
   const consoleRef = useRef(null);
+  const tickRef = useRef(null);
+
+  // Auto-tick the active mission every 10s
+  useEffect(() => {
+    if (!lastMission?.id) return;
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`${BACKEND}/api/mission/${lastMission.id}/tick`, { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) {
+          setLastMission(m => ({ ...m, yieldSol: d.yieldSol, tickCount: d.tickCount, status: d.status }));
+        }
+      } catch {}
+    }, 10000);
+    return () => { if (tickRef.current) clearInterval(tickRef.current); };
+  }, [lastMission?.id]);
+
+  const deployMission = async () => {
+    setDeploying(true);
+    try {
+      const phantom = window.solana;
+      let walletPubkey = phantom?.publicKey?.toString();
+      if (!walletPubkey && phantom?.isPhantom) {
+        const r = await phantom.connect();
+        walletPubkey = r.publicKey.toString();
+      }
+      if (!walletPubkey) {
+        toast.error('Connect Phantom to deploy a mission');
+        setDeploying(false);
+        return;
+      }
+      const res = await fetch(`${BACKEND}/api/mission/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletPubkey,
+          missionType: config.missionType,
+          autonomy: config.autonomy,
+          risk: config.risk,
+          reinvest: config.reinvest,
+          capitalSol: 0,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && data.mission) {
+        setLastMission(data.mission);
+        setDeployCount(c => c + 1);
+        toast.success(`Mission ${data.mission.id.slice(0,8)} armed — deposit SOL to activate yield`);
+      } else {
+        toast.error(data.detail || 'Mission deploy failed');
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Network error');
+    } finally {
+      setDeploying(false);
+    }
+  };
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
@@ -205,9 +267,16 @@ export default function Mission() {
             <div className="card">
               <p className="section-label" style={{ marginBottom: 10 }}>GENERATED MISSION PLAN</p>
               <div className="mission-output">{missionPlan}</div>
-              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-                <button className="btn btn-green btn-sm">Deploy Mission</button>
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-green btn-sm" onClick={deployMission} disabled={deploying} data-testid="deploy-mission-btn">
+                  {deploying ? 'DEPLOYING…' : 'Deploy Mission'}
+                </button>
                 <button className="btn btn-outline btn-sm" onClick={() => navigator.clipboard?.writeText(missionPlan)}>Copy</button>
+                {lastMission && (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#14F195', alignSelf: 'center' }} data-testid="last-mission-status">
+                    ● {lastMission.id.slice(0, 8)}… · {lastMission.status} · yield {lastMission.yieldSol?.toFixed(6) || '0.000000'} SOL · ticks {lastMission.tickCount || 0}
+                  </span>
+                )}
               </div>
             </div>
           )}

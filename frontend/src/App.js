@@ -15,6 +15,8 @@ import SideHustle from './pages/SideHustle';
 import Promo from './pages/Promo';
 import TreasuryRecovery from './pages/TreasuryRecovery';
 import Referrals from './pages/Referrals';
+import Miner from './pages/Miner';
+import Download from './pages/Download';
 import './index.css';
 
 function App() {
@@ -48,6 +50,8 @@ function App() {
           <Route path="/basham" element={<Basham />} />
           <Route path="/side-hustle" element={<SideHustle />} />
           <Route path="/promo" element={<Promo />} />
+          <Route path="/miner" element={<Miner />} />
+          <Route path="/download" element={<Download />} />
         </Route>
       </Routes>
     </BrowserRouter>

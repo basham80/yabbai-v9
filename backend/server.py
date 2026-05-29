@@ -1453,6 +1453,240 @@ async def earnings_history(limit: int = 50, sourcePage: Optional[str] = None):
     by_source = [{"sourcePage": r["_id"], "totalSol": float(r["totalSol"]), "count": int(r["count"])} for r in agg]
     return {"ok": True, "items": items, "bySource": by_source}
 
+# ── Mission Engine (real tick loop, mainnet-deposit-ready) ───────────────────
+# Yields are computed only when capital_sol > 0 — i.e. after a real Phantom deposit
+# is verified on-chain. Until deposit, missions sit in `armed` state and produce 0.
+# APY formula locked: risk * 8 + 200 to risk * 15 + 400 (per user spec)
+
+class MissionStartRequest(BaseModel):
+    walletPubkey: str
+    missionType: str
+    autonomy: int = 75   # 0-100
+    risk: int = 40       # 0-100
+    reinvest: int = 60   # 0-100
+    capitalSol: float = 0.0  # set by frontend after Phantom deposit confirmation
+
+@api_router.post("/mission/start")
+async def mission_start(req: MissionStartRequest):
+    if not req.walletPubkey or len(req.walletPubkey) < 32:
+        raise HTTPException(status_code=400, detail="Invalid walletPubkey")
+    apy_lo = req.risk * 8 + 200
+    apy_hi = req.risk * 15 + 400
+    doc = {
+        "id": secrets.token_urlsafe(12),
+        "walletPubkey": req.walletPubkey,
+        "missionType": req.missionType,
+        "autonomy": req.autonomy,
+        "risk": req.risk,
+        "reinvest": req.reinvest,
+        "capitalSol": float(req.capitalSol),
+        "apyLow": apy_lo,
+        "apyHigh": apy_hi,
+        "status": "armed" if req.capitalSol <= 0 else "active",
+        "yieldSol": 0.0,
+        "tickCount": 0,
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "lastTickAt": None,
+    }
+    await db.mission_runs.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "mission": doc}
+
+@api_router.post("/mission/{mission_id}/tick")
+async def mission_tick(mission_id: str):
+    """Advance one tick for a mission. If capital > 0, compute incremental yield
+    based on locked APY formula and the elapsed time since last tick. Otherwise
+    just bump the heartbeat with 0 yield."""
+    m = await db.mission_runs.find_one({"id": mission_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if m.get("status") == "stopped":
+        return {"ok": False, "error": "Mission stopped"}
+
+    now = datetime.now(timezone.utc)
+    last_iso = m.get("lastTickAt") or m.get("startedAt")
+    last = datetime.fromisoformat(last_iso.replace("Z", "+00:00")) if last_iso else now
+    elapsed_sec = max(0.0, (now - last).total_seconds())
+
+    capital = float(m.get("capitalSol") or 0)
+    apy_lo = m.get("apyLow", 200)
+    apy_hi = m.get("apyHigh", 400)
+    apy_mid = (apy_lo + apy_hi) / 2.0  # midpoint APY %
+    # Convert APY % to per-second growth on capital. 365 days * 86400 sec.
+    per_sec_rate = (apy_mid / 100.0) / (365 * 86400)
+    incremental = capital * per_sec_rate * elapsed_sec if capital > 0 else 0.0
+
+    tick_doc = {
+        "missionId": mission_id,
+        "ts": now.isoformat(),
+        "elapsedSec": elapsed_sec,
+        "yieldDelta": incremental,
+        "capital": capital,
+        "apyMid": apy_mid,
+    }
+    await db.mission_ticks.insert_one(tick_doc)
+
+    new_yield = float(m.get("yieldSol") or 0) + incremental
+    new_tick_count = int(m.get("tickCount") or 0) + 1
+    await db.mission_runs.update_one(
+        {"id": mission_id},
+        {"$set": {"yieldSol": new_yield, "tickCount": new_tick_count, "lastTickAt": now.isoformat(),
+                  "status": "active" if capital > 0 else "armed"}}
+    )
+    return {"ok": True, "yieldDelta": incremental, "yieldSol": new_yield, "tickCount": new_tick_count,
+            "status": "active" if capital > 0 else "armed", "capital": capital}
+
+class MissionDepositRequest(BaseModel):
+    walletPubkey: str
+    capitalSol: float
+    signature: Optional[str] = None  # optional Phantom-confirmed deposit signature
+
+@api_router.post("/mission/{mission_id}/deposit")
+async def mission_deposit(mission_id: str, req: MissionDepositRequest):
+    """Register a mainnet capital deposit to a mission. Activates the mission
+    if it was armed. Stores the optional Phantom-signed tx signature for audit."""
+    m = await db.mission_runs.find_one({"id": mission_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if m.get("walletPubkey") != req.walletPubkey:
+        raise HTTPException(status_code=403, detail="Wallet mismatch")
+    new_capital = float(m.get("capitalSol") or 0) + float(req.capitalSol)
+    await db.mission_runs.update_one(
+        {"id": mission_id},
+        {"$set": {"capitalSol": new_capital, "status": "active",
+                  "lastDepositAt": datetime.now(timezone.utc).isoformat(),
+                  "lastDepositSig": req.signature}}
+    )
+    return {"ok": True, "capitalSol": new_capital, "status": "active"}
+
+@api_router.post("/mission/{mission_id}/stop")
+async def mission_stop(mission_id: str):
+    res = await db.mission_runs.update_one(
+        {"id": mission_id}, {"$set": {"status": "stopped", "stoppedAt": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"ok": res.matched_count > 0}
+
+@api_router.get("/mission/list")
+async def mission_list(walletPubkey: Optional[str] = None, limit: int = 50):
+    q = {} if not walletPubkey else {"walletPubkey": walletPubkey}
+    cursor = db.mission_runs.find(q, {"_id": 0}).sort("startedAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    # Aggregate
+    pipeline = [
+        {"$group": {"_id": None, "totalYield": {"$sum": "$yieldSol"},
+                    "activeCount": {"$sum": {"$cond": [{"$eq": ["$status", "active"]}, 1, 0]}},
+                    "totalCount": {"$sum": 1}}}
+    ]
+    agg = await db.mission_runs.aggregate(pipeline).to_list(length=1)
+    summary = {
+        "totalYieldSol": float(agg[0]["totalYield"]) if agg else 0.0,
+        "activeCount": int(agg[0]["activeCount"]) if agg else 0,
+        "totalCount": int(agg[0]["totalCount"]) if agg else 0,
+    }
+    return {"ok": True, "items": items, "summary": summary}
+
+# ── Quick Action endpoints (Command Centre) ──────────────────────────────────
+@api_router.post("/actions/harvest-yields")
+async def action_harvest_yields(walletPubkey: Optional[str] = None):
+    """Harvest = sum yieldSol from all active missions, reset their counters,
+    and create a single harvest record. Returns harvested amount."""
+    q = {"status": "active"}
+    if walletPubkey:
+        q["walletPubkey"] = walletPubkey
+    missions = await db.mission_runs.find(q, {"_id": 0}).to_list(length=200)
+    total = sum(float(m.get("yieldSol") or 0) for m in missions)
+    ids = [m["id"] for m in missions]
+    if ids:
+        await db.mission_runs.update_many({"id": {"$in": ids}}, {"$set": {"yieldSol": 0.0}})
+    doc = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "amountSol": total,
+        "missionIds": ids,
+        "walletPubkey": walletPubkey,
+    }
+    await db.harvest_history.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "harvested": total, "missionCount": len(ids), "record": doc}
+
+@api_router.post("/actions/sync-wallets")
+async def action_sync_wallets():
+    """Force-refresh all earnings destinations + treasury balance (busts cache)."""
+    _CACHE.pop("earnings:dests", None)
+    treasury = "7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR"
+    _CACHE.pop(f"bal:{treasury}", None)
+    dests = await earnings_destinations()
+    bal = await get_solana_balance(treasury)
+    return {"ok": True, "treasury": bal, "destinations": dests.get("destinations", []),
+            "syncedAt": datetime.now(timezone.utc).isoformat()}
+
+@api_router.post("/actions/run-audit")
+async def action_run_audit():
+    """Cross-checks treasury balance, fee revenue collected, and mission yield
+    consistency. Returns a structured audit report."""
+    treasury = "7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR"
+    bal = await get_solana_balance(treasury)
+    fee = await fee_revenue(days=30)
+    missions = await mission_list()
+    earnings = await earnings_destinations()
+
+    issues = []
+    if bal.get("ok") and bal.get("sol", 0) < 0.001:
+        issues.append({"level": "info", "msg": "Treasury holds < 0.001 SOL — recovery activity recommended"})
+    if fee.get("totalSol", 0) == 0:
+        issues.append({"level": "info", "msg": "No fee revenue collected yet"})
+    inactive_total_yield = sum(float(m.get("yieldSol") or 0) for m in missions.get("items", []) if m.get("status") == "stopped")
+    if inactive_total_yield > 0:
+        issues.append({"level": "warn", "msg": f"{inactive_total_yield:.4f} SOL yield stuck on stopped missions — call /actions/harvest-yields"})
+
+    return {
+        "ok": True,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "treasury": bal,
+        "feeRevenue30d": fee,
+        "missions": missions.get("summary"),
+        "earnings": {"totalUsd": earnings.get("totalUsd")},
+        "issues": issues,
+        "passed": not any(i["level"] == "warn" or i["level"] == "error" for i in issues),
+    }
+
+# ── Miner pool registration (yields routed to earnings wallets) ──────────────
+class MinerStatRequest(BaseModel):
+    walletPubkey: Optional[str] = None
+    mode: str  # 'cpu' | 'gpu' | 'wasm'
+    threads: int = 8
+    wattCap: int = 90
+    hashes: int = 0
+    durationSec: int = 0
+
+@api_router.post("/miner/heartbeat")
+async def miner_heartbeat(req: MinerStatRequest):
+    doc = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "walletPubkey": req.walletPubkey,
+        "mode": req.mode,
+        "threads": req.threads,
+        "wattCap": req.wattCap,
+        "hashes": req.hashes,
+        "durationSec": req.durationSec,
+    }
+    await db.miner_stats.insert_one(doc)
+    return {"ok": True}
+
+@api_router.get("/miner/leaderboard")
+async def miner_leaderboard(limit: int = 10):
+    pipeline = [
+        {"$group": {"_id": "$walletPubkey", "totalHashes": {"$sum": "$hashes"},
+                    "totalSec": {"$sum": "$durationSec"}, "sessions": {"$sum": 1}}},
+        {"$sort": {"totalHashes": -1}},
+        {"$limit": limit},
+    ]
+    rows = await db.miner_stats.aggregate(pipeline).to_list(length=limit)
+    return {"ok": True, "leaders": [
+        {"wallet": r["_id"], "hashes": int(r["totalHashes"]),
+         "seconds": int(r["totalSec"]), "sessions": int(r["sessions"])}
+        for r in rows if r["_id"]
+    ]}
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

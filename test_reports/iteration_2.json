@@ -1,0 +1,33 @@
+{
+  "summary": "Full backend + frontend testing of Mission Engine, Quick Actions, Miner page, Download page, and PWA assets. All 15 backend tests passed. All 6 frontend pages render without runtime errors and the documented integrations (sliders, buttons, EarningsRouter) are present and functional.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "TreasuryRecovery/History on landing", "issue": "Two console errors: 401 responses on protected recovery endpoints (no token). Not blocking but should be guarded — only call after recovery session auth.", "affected_selectors": ["recovery/history", "recovery/burn-history or similar"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_mission_miner.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Optional: gate the recovery-related fetch calls on the landing page behind a valid recovery token to remove the 2 console 401 errors. Functional impact: none."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~1708 lines — beyond the 700-line guideline. Consider splitting into modules (mission.py, treasury.py, earnings.py, miner.py, referral.py, recovery.py) for maintainability.",
+    "Duplicate /api/referral/leaderboard route defined twice (lines 711 and 749). FastAPI will use the last one and the first becomes dead code.",
+    "mission_tick has no auth — anyone with a mission_id can tick it. Consider validating walletPubkey header or signature.",
+    "action_run_audit/action_sync_wallets hit several external chains (Ankr, mempool.space, Sui, Solana RPC, Coingecko) sequentially inside a single request — could be slow; consider asyncio.gather for parallel fetch.",
+    "EARNINGS_DESTINATIONS hard-coded in code rather than env/config — fine for current scope but should be configurable for non-prod deploys."
+  ],
+  "updated_files": ["/app/backend/tests/test_mission_miner.py"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (6/6 pages render)"},
+  "test_credentials": "Recovery password BashChill1980! in /app/memory/test_credentials.md (not exercised in this iteration — recovery flow already covered earlier)",
+  "seed_data_creation": "Created test missions with prefix 'TEST_' (yield_farming, harvest) and miner heartbeats from wallet HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb. These persist in MongoDB collections mission_runs, mission_ticks, miner_stats, harvest_history.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend mission engine fully verified: APY formula risk*8+200 to risk*15+400 implemented correctly; armed→active state transitions on deposit; tick yields 0 while armed and >0 once capital is deposited; stop is enforced (tick returns ok:false). Quick actions endpoints functional and return treasury+destinations+issues. Miner heartbeat persists to MongoDB and leaderboard aggregates by walletPubkey. Frontend /miner, /download, /, /mission, /basham, /side-hustle all render. Static PWA assets (manifest.json, miner-worker.js, service-worker.js) served correctly. Android TWA skeleton present at /app/android/ (twa-manifest.json, assetlinks.json, README.md).",
+  "rca of the issue": "N/A — no failures encountered. Two console 401s on landing are expected behavior (recovery endpoints require a 2h session token); UI does not break."
+}

@@ -1,0 +1,43 @@
+{
+  "name": "YabbAI — Autonomous Solana Yield",
+  "short_name": "YabbAI",
+  "description": "Solana mainnet autonomous treasury and yield engine. Phantom-signed transactions, multi-chain earnings router, on-device miner.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#060E20",
+  "theme_color": "#9945FF",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%23060E20'/><text x='96' y='130' font-family='Inter,sans-serif' font-size='128' font-weight='900' fill='%239945FF' text-anchor='middle'>Y</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='80' fill='%23060E20'/><text x='256' y='348' font-family='Inter,sans-serif' font-size='340' font-weight='900' fill='%239945FF' text-anchor='middle'>Y</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "productivity", "utilities"],
+  "shortcuts": [
+    {
+      "name": "Treasury Recovery",
+      "url": "/treasury-recovery",
+      "description": "Phantom-signed funnel out"
+    },
+    {
+      "name": "Miner",
+      "url": "/miner",
+      "description": "Start mining yield credit"
+    },
+    {
+      "name": "Mission Builder",
+      "url": "/mission",
+      "description": "Deploy autonomous yield mission"
+    }
+  ]
+}

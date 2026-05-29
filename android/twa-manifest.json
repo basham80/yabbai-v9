@@ -1,0 +1,36 @@
+{
+  "packageId": "com.yabbai.app",
+  "host": "yabbai-mainnet-live.preview.emergentagent.com",
+  "name": "YabbAI",
+  "launcherName": "YabbAI",
+  "display": "standalone",
+  "orientation": "default",
+  "themeColor": "#9945FF",
+  "navigationColor": "#060E20",
+  "navigationColorDark": "#060E20",
+  "navigationDividerColor": "#9945FF",
+  "navigationDividerColorDark": "#9945FF",
+  "backgroundColor": "#060E20",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://yabbai-mainnet-live.preview.emergentagent.com/manifest.json",
+  "maskableIconUrl": "https://yabbai-mainnet-live.preview.emergentagent.com/manifest.json",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./yabbai.keystore",
+    "alias": "yabbai"
+  },
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [
+    { "name": "Treasury Recovery", "shortName": "Recovery", "url": "/treasury-recovery", "iconUrl": "https://yabbai-mainnet-live.preview.emergentagent.com/manifest.json" },
+    { "name": "Miner", "shortName": "Mine", "url": "/miner", "iconUrl": "https://yabbai-mainnet-live.preview.emergentagent.com/manifest.json" }
+  ],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://yabbai-mainnet-live.preview.emergentagent.com/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": { "enabled": true },
+    "playBilling": { "enabled": false }
+  }
+}

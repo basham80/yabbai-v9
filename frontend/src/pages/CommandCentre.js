@@ -355,19 +355,81 @@ export default function CommandCentre() {
       {/* Quick actions */}
       <FeeRevenueWidget />
       <EarningsRouter sourcePage="command" title="Earnings Router · all sources → multi-chain wallets" />
-      <div className="card fade-in-4">
-        <p className="section-label" style={{ marginBottom: 14 }}>QUICK ACTIONS</p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button className="btn btn-primary">Deploy Mission</button>
-          <button className="btn btn-green">Harvest Yields</button>
-          <Link to="/treasury-recovery" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="cc-recovery-link">
-            ◆ Treasury Recovery
-          </Link>
-          <button className="btn btn-outline">View Treasury</button>
-          <button className="btn btn-outline">Sync Wallets</button>
-          <button className="btn btn-outline">Run Audit</button>
-        </div>
+      <CommandQuickActions />
+    </div>
+  );
+}
+
+function CommandQuickActions() {
+  const [busy, setBusy] = React.useState(null);
+  const [audit, setAudit] = React.useState(null);
+  const [harvest, setHarvest] = React.useState(null);
+  const [sync, setSync] = React.useState(null);
+
+  const run = async (which, url, init = {}) => {
+    setBusy(which);
+    try {
+      const base = process.env.REACT_APP_BACKEND_URL;
+      const r = await fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, ...init });
+      const d = await r.json();
+      if (which === 'audit') setAudit(d);
+      if (which === 'harvest') setHarvest(d);
+      if (which === 'sync') setSync(d);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="card fade-in-4" data-testid="quick-actions-card">
+      <p className="section-label" style={{ marginBottom: 14 }}>QUICK ACTIONS</p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <Link to="/mission" className="btn btn-primary" style={{ textDecoration: 'none' }} data-testid="qa-deploy-mission">Deploy Mission</Link>
+        <button className="btn btn-green" onClick={() => run('harvest', '/api/actions/harvest-yields')} disabled={busy === 'harvest'} data-testid="qa-harvest">
+          {busy === 'harvest' ? 'HARVESTING…' : 'Harvest Yields'}
+        </button>
+        <Link to="/treasury-recovery" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="cc-recovery-link">
+          ◆ Treasury Recovery
+        </Link>
+        <Link to="/wallet" className="btn btn-outline" style={{ textDecoration: 'none' }} data-testid="qa-treasury">View Treasury</Link>
+        <button className="btn btn-outline" onClick={() => run('sync', '/api/actions/sync-wallets')} disabled={busy === 'sync'} data-testid="qa-sync">
+          {busy === 'sync' ? 'SYNCING…' : 'Sync Wallets'}
+        </button>
+        <button className="btn btn-outline" onClick={() => run('audit', '/api/actions/run-audit')} disabled={busy === 'audit'} data-testid="qa-audit">
+          {busy === 'audit' ? 'AUDITING…' : 'Run Audit'}
+        </button>
+        <Link to="/miner" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="qa-miner">Open Miner</Link>
+        <Link to="/download" className="btn btn-outline" style={{ textDecoration: 'none' }} data-testid="qa-download">Download App</Link>
       </div>
+
+      {harvest && (
+        <div style={{ marginTop: 14, padding: 12, background: 'rgba(20,241,149,0.06)', border: '1px solid rgba(20,241,149,0.2)', borderRadius: 6 }} data-testid="harvest-result">
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#14F195' }}>
+            ► HARVEST: {harvest.harvested?.toFixed(6) || '0.000000'} SOL collected from {harvest.missionCount || 0} mission(s)
+          </div>
+        </div>
+      )}
+      {sync && sync.ok && (
+        <div style={{ marginTop: 14, padding: 12, background: 'rgba(153,69,255,0.06)', border: '1px solid rgba(153,69,255,0.2)', borderRadius: 6 }} data-testid="sync-result">
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#b890ff' }}>
+            ► SYNCED at {new Date(sync.syncedAt).toLocaleTimeString()} · Treasury {(sync.treasury?.sol || 0).toFixed(4)} SOL · {sync.destinations?.length || 0} dest wallets refreshed
+          </div>
+        </div>
+      )}
+      {audit && audit.ok && (
+        <div style={{ marginTop: 14, padding: 12, background: 'rgba(245,166,35,0.06)', border: '1px solid rgba(245,166,35,0.2)', borderRadius: 6 }} data-testid="audit-result">
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#F5A623', marginBottom: 6 }}>
+            ► AUDIT {audit.passed ? 'PASSED' : 'NEEDS ATTENTION'} · Treasury {(audit.treasury?.sol || 0).toFixed(4)} SOL · {audit.missions?.activeCount || 0} active missions
+          </div>
+          {audit.issues?.length > 0 && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#e8f0ff' }}>
+              {audit.issues.map((i, idx) => <div key={idx}>· [{i.level}] {i.msg}</div>)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

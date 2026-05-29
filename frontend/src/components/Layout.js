@@ -15,6 +15,8 @@ const NAV_LINKS = [
   { to: '/basham', label: 'BASHAM' },
   { to: '/side-hustle', label: 'Side Hustle' },
   { to: '/promo', label: 'Promo' },
+  { to: '/miner', label: 'Miner' },
+  { to: '/download', label: 'Download' },
 ];
 
 const TREASURY_ADDR = '7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR';
