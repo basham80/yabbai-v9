@@ -18,6 +18,7 @@ import Referrals from './pages/Referrals';
 import Miner from './pages/Miner';
 import Download from './pages/Download';
 import WithdrawKaspa from './pages/WithdrawKaspa';
+import GrowthConsole from './pages/GrowthConsole';
 import './index.css';
 
 function App() {
@@ -54,6 +55,8 @@ function App() {
           <Route path="/miner" element={<Miner />} />
           <Route path="/download" element={<Download />} />
           <Route path="/withdraw-kaspa" element={<WithdrawKaspa />} />
+          <Route path="/glorp" element={<GrowthConsole />} />
+          <Route path="/growth" element={<GrowthConsole />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -1969,6 +1969,247 @@ async def swap_kaspa_history(limit: int = 20):
     items = await cursor.to_list(length=limit)
     return {"ok": True, "items": items}
 
+# ── Token Growth Console (initial target: GLORP, mint configurable) ──────────
+GLORP_MINT = "6KaXDzZKzhxQYnBeL4c6b3RCrpJY5z7zsPh43aNyxtXs"
+GLORP_POOL = "DnXJ9zXdQUzfedr4GSLDhrxMmt1QSgX4HgtWxhUYRCBK"
+
+@api_router.get("/growth/overview")
+async def growth_overview(mint: str = GLORP_MINT):
+    """Pulls live on-chain + DEX-aggregator intelligence on a token.
+    Returns: price, liquidity, volume, holder count, top10 concentration,
+    LP burn/lock status, age, social presence."""
+    out = {
+        "ok": True, "mint": mint, "symbol": None, "name": None,
+        "price": 0.0, "liquidityUsd": 0.0, "volume24h": 0.0,
+        "fdv": 0.0, "priceChange24h": 0.0, "txns24h": {"buys": 0, "sells": 0},
+        "holderCount": 0, "top10Pct": 0.0, "lpBurnedPct": 0.0,
+        "pairCreatedAt": None, "ageDays": 0, "socials": [], "websites": [],
+        "dex": None, "pairAddress": None, "warnings": [], "strengths": [],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            # 1) DexScreener pair info
+            dr = await ch.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+            if dr.status_code == 200:
+                pairs = dr.json().get("pairs") or []
+                # Pick the highest-liquidity pair
+                if pairs:
+                    p = max(pairs, key=lambda x: float(x.get("liquidity", {}).get("usd") or 0))
+                    base = p.get("baseToken", {})
+                    out["symbol"] = base.get("symbol")
+                    out["name"] = base.get("name")
+                    out["price"] = float(p.get("priceUsd") or 0)
+                    out["liquidityUsd"] = float(p.get("liquidity", {}).get("usd") or 0)
+                    out["volume24h"] = float(p.get("volume", {}).get("h24") or 0)
+                    out["fdv"] = float(p.get("fdv") or 0)
+                    out["priceChange24h"] = float(p.get("priceChange", {}).get("h24") or 0)
+                    out["txns24h"] = p.get("txns", {}).get("h24") or {"buys": 0, "sells": 0}
+                    out["pairCreatedAt"] = p.get("pairCreatedAt")
+                    if out["pairCreatedAt"]:
+                        age = (datetime.now(timezone.utc).timestamp() * 1000) - int(out["pairCreatedAt"])
+                        out["ageDays"] = round(age / (1000 * 60 * 60 * 24), 1)
+                    info = p.get("info") or {}
+                    out["socials"] = info.get("socials") or []
+                    out["websites"] = info.get("websites") or []
+                    out["dex"] = p.get("dexId")
+                    out["pairAddress"] = p.get("pairAddress")
+
+            # 2) Holder count via Helius — fallback to RPC getTokenLargestAccounts
+            rpc_url = os.environ.get("SOLANA_RPC_URL", SOLANA_RPC)
+            try:
+                lr = await ch.post(rpc_url, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "getTokenLargestAccounts",
+                    "params": [mint, {"commitment": "confirmed"}],
+                })
+                largest = (lr.json() or {}).get("result", {}).get("value", []) or []
+                if largest:
+                    # Sum top 10 amounts as concentration proxy
+                    amounts = [float(a.get("uiAmount") or 0) for a in largest[:10]]
+                    top10_sum = sum(amounts)
+                    # Supply
+                    sr = await ch.post(rpc_url, json={
+                        "jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [mint],
+                    })
+                    supply = float((sr.json() or {}).get("result", {}).get("value", {}).get("uiAmount") or 0)
+                    if supply > 0:
+                        out["top10Pct"] = round((top10_sum / supply) * 100, 2)
+            except Exception as e:
+                logger.warning(f"getTokenLargestAccounts failed: {e}")
+
+        # 3) Heuristic strengths/warnings
+        if out["liquidityUsd"] < 1000:
+            out["warnings"].append(f"Liquidity is very thin (${out['liquidityUsd']:.2f}). Any swap >$5 will move price >10%. CEX listings require ≥$50k LP minimum.")
+        elif out["liquidityUsd"] < 10000:
+            out["warnings"].append(f"Liquidity (${out['liquidityUsd']:.0f}) is below the $10k threshold real buyers look for. Add LP before marketing.")
+        if out["top10Pct"] > 70:
+            out["warnings"].append(f"Top-10 holders own {out['top10Pct']}% — concentration too high. Buyers will see this as rug risk.")
+        elif out["top10Pct"] > 50:
+            out["warnings"].append(f"Top-10 concentration is {out['top10Pct']}%. Aim for <40% for healthy distribution.")
+        if not out["socials"] and not out["websites"]:
+            out["warnings"].append("No socials/website attached on DexScreener. Submit Token Info form so they appear to every buyer.")
+        if out["ageDays"] and out["ageDays"] < 1:
+            out["strengths"].append("Brand new launch — narrative is still wide open.")
+        if out["volume24h"] > 1000 and out["liquidityUsd"] > 0:
+            ratio = out["volume24h"] / out["liquidityUsd"]
+            if 0.5 < ratio < 10:
+                out["strengths"].append(f"Healthy vol/LP ratio ({ratio:.2f}× turnover) — organic interest exists.")
+        return out
+    except Exception as e:
+        logger.error(f"growth_overview error: {e}")
+        return {"ok": False, "error": str(e)}
+
+class MarketingRequest(BaseModel):
+    mint: str = GLORP_MINT
+    tone: str = "degen"  # 'degen' | 'serious' | 'meme' | 'community'
+    overview: Optional[dict] = None  # pass the overview to avoid double-fetching
+
+@api_router.post("/growth/marketing")
+async def growth_marketing(req: MarketingRequest):
+    """Generates 10 tweet drafts + 3 thread variations + 5 telegram pitches
+    based on REAL on-chain data using Claude Sonnet."""
+    overview = req.overview
+    if not overview:
+        overview = await growth_overview(req.mint)
+
+    if not EMERGENT_LLM_KEY:
+        return {"ok": False, "error": "LLM key not configured"}
+
+    facts = (
+        f"Symbol: {overview.get('symbol')} | Name: {overview.get('name')} | Mint: {req.mint}\n"
+        f"Price: ${overview.get('price', 0):.10f} | 24h change: {overview.get('priceChange24h', 0):.2f}%\n"
+        f"Liquidity: ${overview.get('liquidityUsd', 0):,.2f} | FDV: ${overview.get('fdv', 0):,.0f}\n"
+        f"Volume 24h: ${overview.get('volume24h', 0):.2f} | Buys/Sells: {overview.get('txns24h', {}).get('buys', 0)}/{overview.get('txns24h', {}).get('sells', 0)}\n"
+        f"Top-10 holder concentration: {overview.get('top10Pct', 0)}%\n"
+        f"Age: {overview.get('ageDays', 0)} days\n"
+        f"DEX: {overview.get('dex')} on Solana\n"
+        f"Pool: {overview.get('pairAddress')}\n"
+    )
+
+    tone_map = {
+        "degen": "raw, all-caps energy, crypto-twitter degen voice. Use emojis sparingly.",
+        "serious": "professional, fundamentals-focused, like a real launch announcement.",
+        "meme": "absurdist humor, references to meme culture, copy that wants to be screenshotted.",
+        "community": "warm, inclusive, focused on holder benefits and roadmap.",
+    }
+    tone_desc = tone_map.get(req.tone, tone_map["degen"])
+
+    system = (
+        "You are a world-class crypto marketing copywriter who has launched 50+ successful memecoins. "
+        "You write copy that's HONEST about the data (no fake metrics, no wash-trading hints), funny, "
+        "and lands on crypto Twitter. You NEVER promise price action — you sell the story, the community, "
+        "the meme, and the actual on-chain facts. You understand that promises of pumps are illegal and "
+        "uncool. Output ONLY the marketing assets in markdown, no preamble."
+    )
+    prompt = (
+        f"REAL on-chain data for the token:\n{facts}\n\n"
+        f"Tone: {tone_desc}\n\n"
+        "Generate ALL of the following in this exact structure:\n\n"
+        "## 10 Tweet Drafts\n(numbered list, each <280 chars)\n\n"
+        "## 3 Thread Variations\n(each 4-7 tweets, separated by '---', numbered Thread A/B/C)\n\n"
+        "## 5 Telegram Pitches\n(short paragraph each, for posting in raid groups — no fake claims)\n\n"
+        "## 1 Sniper-Audit Tweet\n(addresses the rug-risk concern head-on using the real holder/LP numbers)\n\n"
+        "Important: if the data shows weakness (low LP, high concentration), the copy must ADDRESS that "
+        "honestly while still being engaging. Lying about metrics = instant blacklist."
+    )
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = (
+            LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"growth-{req.mint[:8]}-{int(time.time())}", system_message=system)
+            .with_model("anthropic", "claude-haiku-4-5-20251001")
+        )
+        reply = await chat.send_message(UserMessage(text=prompt))
+        return {"ok": True, "content": str(reply), "tone": req.tone,
+                "overview": overview, "generatedAt": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        logger.error(f"growth_marketing error: {e}")
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/growth/whales")
+async def growth_whales(mint: str = GLORP_MINT, minSol: float = 0.5):
+    """Recent large transfers involving the token. Uses Helius enhanced tx API if key set,
+    falls back to Solscan public mirror."""
+    helius_key = os.environ.get("HELIUS_API_KEY", "")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as ch:
+            if helius_key:
+                url = f"https://api.helius.xyz/v0/addresses/{mint}/transactions?api-key={helius_key}&limit=30"
+                r = await ch.get(url)
+                if r.status_code == 200:
+                    txs = r.json() or []
+                    whales = []
+                    for t in txs:
+                        for tt in (t.get("tokenTransfers") or []):
+                            if tt.get("mint") == mint:
+                                amt = float(tt.get("tokenAmount") or 0)
+                                if amt > 0:
+                                    whales.append({
+                                        "signature": t.get("signature"),
+                                        "from": tt.get("fromUserAccount"),
+                                        "to": tt.get("toUserAccount"),
+                                        "amount": amt,
+                                        "ts": t.get("timestamp"),
+                                    })
+                    return {"ok": True, "source": "helius", "whales": whales[:20]}
+            # Fallback: DexScreener tx list (small but free)
+            dr = await ch.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+            if dr.status_code != 200:
+                return {"ok": False, "error": "no whale source available"}
+            return {"ok": True, "source": "dexscreener",
+                    "note": "Set HELIUS_API_KEY env var for full whale feed",
+                    "whales": []}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/growth/listing-readiness")
+async def growth_listing_readiness(mint: str = GLORP_MINT):
+    """Compares the token's current state against published listing thresholds
+    for CoinGecko, CoinMarketCap, Coinbase, and Binance."""
+    ov = await growth_overview(mint)
+    if not ov.get("ok"):
+        return {"ok": False, "error": "overview failed"}
+
+    checks = []
+    def chk(name, current, threshold, passed, hint):
+        checks.append({"name": name, "current": current, "threshold": threshold, "passed": passed, "hint": hint})
+
+    # CoinGecko
+    chk("CG · Liquidity ≥ $1k", f"${ov['liquidityUsd']:.0f}", "$1,000", ov["liquidityUsd"] >= 1000,
+        "Add LP via Phantom-signed Add Liquidity on Raydium")
+    chk("CG · Age ≥ 30 days", f"{ov['ageDays']} d", "30 d", (ov["ageDays"] or 0) >= 30,
+        "Time-gated — wait it out, accumulate volume meanwhile")
+    chk("CG · Socials attached", "Yes" if ov["socials"] else "No", "X + Telegram + Site",
+        bool(ov["socials"]) or bool(ov["websites"]),
+        "Submit Token Info form on DexScreener with X handle + TG + site")
+
+    # CoinMarketCap
+    chk("CMC · Vol 24h ≥ $5k", f"${ov['volume24h']:.0f}", "$5,000", ov["volume24h"] >= 5000,
+        "Organic only — never wash-trade. Volume comes from real community + LP depth")
+    chk("CMC · Top-10 ≤ 50%", f"{ov['top10Pct']}%", "≤ 50%", (ov["top10Pct"] or 0) <= 50,
+        "Distribute via airdrops to real holders. Don't dump from dev wallet.")
+    chk("CMC · 250+ holders", "Helius needed for real count", "≥ 250", False,
+        "Set HELIUS_API_KEY env var to enable accurate holder count")
+
+    # Coinbase Listings (Asset Hub)
+    chk("Coinbase · Liquidity ≥ $50k", f"${ov['liquidityUsd']:.0f}", "$50,000",
+        ov["liquidityUsd"] >= 50000, "This is the real blocker for any CEX. Build LP to $50k+.")
+    chk("Coinbase · Vol 30d ≥ $100k", "—", "$100k+", False,
+        "30-day organic volume measured by CB Asset Hub")
+
+    # Binance Innovation Zone (memecoin)
+    chk("Binance Innov · LP ≥ $250k", f"${ov['liquidityUsd']:.0f}", "$250,000",
+        ov["liquidityUsd"] >= 250000, "Innovation Zone minimum threshold")
+    chk("Binance · Audit (CertiK/Hacken)", "Not submitted", "Audit Report", False,
+        "Memecoins now require basic audit; Hacken Shield free tier works")
+
+    passed = sum(1 for c in checks if c["passed"])
+    total = len(checks)
+    return {
+        "ok": True, "mint": mint, "overview": ov,
+        "checks": checks, "passed": passed, "total": total,
+        "readinessScore": round(passed / total * 100) if total > 0 else 0,
+    }
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

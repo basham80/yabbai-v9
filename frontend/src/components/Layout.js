@@ -16,6 +16,7 @@ const NAV_LINKS = [
   { to: '/side-hustle', label: 'Side Hustle' },
   { to: '/promo', label: 'Promo' },
   { to: '/miner', label: 'Miner' },
+  { to: '/glorp', label: 'GLORP' },
   { to: '/download', label: 'Download' },
 ];
 
