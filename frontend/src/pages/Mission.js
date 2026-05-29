@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
+import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import EarningsRouter from '../components/EarningsRouter';
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL;
+const MISSION_POOL = 'HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb'; // SOL earnings wallet = mission capital pool
+const RPC_URL = 'https://api.mainnet-beta.solana.com';
 
 const MISSION_TYPES = [
   'Liquidity Mining Protocol',
@@ -121,6 +124,47 @@ export default function Mission() {
       toast.error(e?.message || 'Network error');
     } finally {
       setDeploying(false);
+    }
+  };
+
+  const [depositAmount, setDepositAmount] = useState('0.1');
+  const [depositing, setDepositing] = useState(false);
+  const depositMission = async () => {
+    if (!lastMission?.id) return;
+    if (!window.solana?.isPhantom) { toast.error('Phantom not detected'); return; }
+    const amt = parseFloat(depositAmount);
+    if (!amt || amt <= 0) { toast.error('Enter SOL amount > 0'); return; }
+    setDepositing(true);
+    try {
+      const phantom = window.solana;
+      if (!phantom.isConnected || !phantom.publicKey) await phantom.connect();
+      const fromPubkey = phantom.publicKey;
+      const toPubkey = new PublicKey(MISSION_POOL);
+      const lamports = Math.floor(amt * LAMPORTS_PER_SOL);
+      const connection = new Connection(RPC_URL, 'confirmed');
+      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey, toPubkey, lamports }));
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = fromPubkey;
+      const signed = await phantom.signTransaction(tx);
+      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction(sig, 'confirmed');
+      // Tell backend the mission is funded
+      const r = await fetch(`${BACKEND}/api/mission/${lastMission.id}/deposit`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletPubkey: fromPubkey.toString(), capitalSol: amt, signature: sig }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setLastMission(m => ({ ...m, capitalSol: d.capitalSol, status: d.status }));
+        toast.success(`Deposited ${amt} SOL · Mission ACTIVE`);
+      } else {
+        toast.error(d.detail || 'Deposit recording failed');
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Deposit failed');
+    } finally {
+      setDepositing(false);
     }
   };
 
@@ -274,10 +318,35 @@ export default function Mission() {
                 <button className="btn btn-outline btn-sm" onClick={() => navigator.clipboard?.writeText(missionPlan)}>Copy</button>
                 {lastMission && (
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#14F195', alignSelf: 'center' }} data-testid="last-mission-status">
-                    ● {lastMission.id.slice(0, 8)}… · {lastMission.status} · yield {lastMission.yieldSol?.toFixed(6) || '0.000000'} SOL · ticks {lastMission.tickCount || 0}
+                    ● {lastMission.id.slice(0, 8)}… · {lastMission.status} · cap {(lastMission.capitalSol || 0).toFixed(4)} SOL · yield {(lastMission.yieldSol || 0).toFixed(6)} SOL · ticks {lastMission.tickCount || 0}
                   </span>
                 )}
               </div>
+
+              {/* Phantom-signed mission deposit */}
+              {lastMission && (
+                <div style={{
+                  marginTop: 14, padding: 14,
+                  background: 'linear-gradient(135deg, rgba(20,241,149,0.05), rgba(20,241,149,0.02))',
+                  border: '1px solid rgba(20,241,149,0.25)', borderRadius: 8,
+                }} data-testid="mission-deposit-panel">
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.18em', color: '#14F195', marginBottom: 8 }}>
+                    ◆ {lastMission.status === 'active' ? 'ADD CAPITAL' : 'ACTIVATE MISSION · DEPOSIT SOL'}
+                  </div>
+                  <p style={{ fontSize: 11, color: '#7c98c4', fontFamily: 'var(--font-mono)', lineHeight: 1.5, marginBottom: 10 }}>
+                    Signs a real Phantom transfer to the mission capital pool (<span style={{ color: '#b890ff' }}>{MISSION_POOL.slice(0, 10)}…</span>).
+                    Backend auto-ticks every 30s while active. APY range: <b style={{ color: '#14F195' }}>{lastMission.apyLow || 0}%–{lastMission.apyHigh || 0}%</b>.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input type="number" step="0.001" min="0" value={depositAmount} onChange={e => setDepositAmount(e.target.value)}
+                      style={{ flex: 1, minWidth: 200, padding: '10px 12px', background: 'rgba(8,16,36,0.6)', border: '1px solid rgba(20,241,149,0.25)', borderRadius: 6, color: '#e8f0ff', fontFamily: 'var(--font-mono)', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
+                      data-testid="mission-deposit-input" />
+                    <button onClick={depositMission} disabled={depositing} className="btn btn-green" data-testid="mission-deposit-btn">
+                      {depositing ? 'SIGNING…' : `DEPOSIT ${depositAmount} SOL`}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

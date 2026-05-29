@@ -354,7 +354,36 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    _AUTO_TICK_ACTIVE["stop"] = True
     client.close()
+
+# ── Background mission auto-ticker ───────────────────────────────────────────
+# Ticks every active mission every 30s so yields accrue 24/7 (not only when the
+# Mission page is open in a browser).
+import asyncio
+_AUTO_TICK_ACTIVE = {"stop": False, "started": False}
+
+async def _auto_tick_loop():
+    logger.info("Mission auto-tick loop started (30s interval)")
+    while not _AUTO_TICK_ACTIVE["stop"]:
+        try:
+            cursor = db.mission_runs.find({"status": "active", "capitalSol": {"$gt": 0}}, {"_id": 0, "id": 1})
+            active = await cursor.to_list(length=500)
+            for m in active:
+                try:
+                    await mission_tick(m["id"])  # reuses the same logic as the HTTP endpoint
+                except Exception as e:
+                    logger.warning(f"auto-tick failed for {m.get('id')}: {e}")
+        except Exception as e:
+            logger.error(f"auto-tick loop error: {e}")
+        await asyncio.sleep(30)
+
+@app.on_event("startup")
+async def _start_auto_tick():
+    if _AUTO_TICK_ACTIVE["started"]:
+        return
+    _AUTO_TICK_ACTIVE["started"] = True
+    asyncio.create_task(_auto_tick_loop())
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @api_router.get("/health")

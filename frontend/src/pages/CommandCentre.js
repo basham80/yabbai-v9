@@ -385,6 +385,56 @@ function CommandQuickActions() {
     }
   };
 
+  const harvestAndFunnel = async () => {
+    setBusy('harvest-funnel');
+    try {
+      const base = process.env.REACT_APP_BACKEND_URL;
+      // 1) Harvest
+      const hres = await fetch(`${base}/api/actions/harvest-yields`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const hdata = await hres.json();
+      setHarvest(hdata);
+      const harvested = hdata?.harvested || 0;
+      if (harvested <= 0.000005) {
+        // require toast via react-hot-toast — but it's imported in Mission, not here. Use alert fallback.
+        alert(`Nothing to funnel (harvested ${harvested.toFixed(6)} SOL).`);
+        return;
+      }
+      // 2) Phantom-sign transfer of harvested amount to SOL earnings wallet
+      if (!window.solana?.isPhantom) {
+        alert(`Harvested ${harvested.toFixed(6)} SOL — connect Phantom to funnel automatically.`);
+        return;
+      }
+      const { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+      const phantom = window.solana;
+      if (!phantom.isConnected || !phantom.publicKey) await phantom.connect();
+      const fromPubkey = phantom.publicKey;
+      const toPubkey = new PublicKey('HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb');
+      const lamports = Math.floor(harvested * LAMPORTS_PER_SOL);
+      const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey, toPubkey, lamports }));
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      tx.recentBlockhash = blockhash; tx.feePayer = fromPubkey;
+      const signed = await phantom.signTransaction(tx);
+      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction(sig, 'confirmed');
+      // 3) Record earnings
+      await fetch(`${base}/api/earnings/record`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signature: sig, sourcePage: 'command-harvest-funnel', chain: 'solana',
+          amount: harvested, fromOwner: fromPubkey.toString(),
+          destination: 'HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb',
+          note: `Auto-funnel after harvest of ${hdata.missionCount} mission(s)`,
+        }),
+      }).catch(() => {});
+      alert(`✓ Harvested ${harvested.toFixed(6)} SOL and funneled to earnings wallet\nTx: ${sig.slice(0, 16)}…`);
+    } catch (e) {
+      alert(`Failed: ${e?.message || e}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="card fade-in-4" data-testid="quick-actions-card">
       <p className="section-label" style={{ marginBottom: 14 }}>QUICK ACTIONS</p>
@@ -392,6 +442,9 @@ function CommandQuickActions() {
         <Link to="/mission" className="btn btn-primary" style={{ textDecoration: 'none' }} data-testid="qa-deploy-mission">Deploy Mission</Link>
         <button className="btn btn-green" onClick={() => run('harvest', '/api/actions/harvest-yields')} disabled={busy === 'harvest'} data-testid="qa-harvest">
           {busy === 'harvest' ? 'HARVESTING…' : 'Harvest Yields'}
+        </button>
+        <button className="btn btn-gold" onClick={harvestAndFunnel} disabled={busy === 'harvest-funnel'} data-testid="qa-harvest-funnel">
+          {busy === 'harvest-funnel' ? 'HARVEST + FUNNEL…' : 'Harvest & Funnel → Earnings'}
         </button>
         <Link to="/treasury-recovery" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="cc-recovery-link">
           ◆ Treasury Recovery

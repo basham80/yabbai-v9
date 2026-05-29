@@ -13,6 +13,12 @@ Build complete YabbAI-Brain production app from "profitr-main (2).zip":
 - **Frontend**: React + CRACO via `yarn start` on port 3000 (supervisor)
 - **External APIs**: Jupiter v3 (lite-api.jup.ag), Solana mainnet RPC, Phantom (window.solana)
 
+## Implemented (2026-02-13 — third batch · fully operational)
+### Auto-tick + Phantom-signed deposits + auto-funnel
+- **Background auto-tick scheduler**: asyncio task on FastAPI startup ticks every active mission every 30s — yields accrue 24/7 even when no browser is open. Verified via log: `Mission auto-tick loop started (30s interval)`.
+- **Phantom-signed mission deposit UI** on `/mission`: after Deploy, an "ACTIVATE MISSION · DEPOSIT SOL" panel signs a real on-chain SOL transfer from the connected Phantom wallet to the SOL earnings wallet (`HKjC…`) and records the signature via `/api/mission/{id}/deposit`. Mission transitions armed→active automatically.
+- **Harvest & Funnel** combo button on CommandCentre Quick Actions: harvests all active mission yields then immediately Phantom-signs a transfer of the harvested amount to the SOL earnings wallet. Records both events for full audit trail.
+
 ## Implemented (2026-02-13 — second batch)
 ### Mission Engine + Quick Actions + Miner + PWA + Android TWA
 - `POST /api/mission/start` — armed-state mission, capitalSol=0 starts armed (no fake yield)
