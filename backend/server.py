@@ -1058,6 +1058,401 @@ async def sweep_history(token: str, limit: int = 50):
     count = int(agg[0]["count"]) if agg else 0
     return {"ok": True, "items": items, "totalOutSol": total_sol, "count": count}
 
+
+# ── Pull Liquidity (sell all of a given SPL mint to SOL via Jupiter) ─────────
+@api_router.get("/treasury/liquidity-status")
+async def liquidity_status(mint: str, owner: str):
+    """Read-only: returns what an `owner` could realistically extract from `mint`.
+    Always honest about pump.fun bonding-curve / burned-LP limitations."""
+    if not mint or len(mint) < 32 or not owner or len(owner) < 32:
+        raise HTTPException(status_code=400, detail="Invalid mint or owner")
+
+    bal = await get_solana_balance(owner)
+    holdings = 0.0
+    decimals = 0
+    if bal.get("ok"):
+        for t in (bal.get("tokens") or []):
+            if t.get("mint") == mint:
+                holdings = float(t.get("amount") or 0)
+                decimals = int(t.get("decimals") or 0)
+                break
+
+    price = 0.0
+    pool_liquidity = 0.0
+    tradeable = False
+    graduated = False  # pump.fun-style: post-graduation tokens trade on Raydium
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as ch:
+            pr = await ch.get("https://lite-api.jup.ag/price/v3", params={"ids": mint})
+            if pr.status_code == 200:
+                info = pr.json().get(mint, {}) or {}
+                price = float(info.get("usdPrice") or 0)
+                pool_liquidity = float(info.get("liquidity") or 0)
+                tradeable = price > 0
+            # Heuristic: pump.fun mints end with "pump" suffix; post-graduation pool depth >> bonding curve cap
+            if mint.lower().endswith("pump") and pool_liquidity > 50000:
+                graduated = True
+    except Exception:
+        pass
+
+    notes = []
+    if mint.lower().endswith("pump"):
+        notes.append("This is a pump.fun mint. The bonding-curve SOL reserve cannot be drained by the creator.")
+        if graduated:
+            notes.append("Token has graduated to Raydium. The original LP was burned at graduation and is permanently locked.")
+        else:
+            notes.append("Token is still on the bonding curve. The only way to extract value is to sell your holdings back through the curve.")
+    if holdings <= 0:
+        notes.append(f"Wallet {owner[:8]}… holds 0 of this mint — nothing to pull from this address.")
+
+    return {
+        "ok": True,
+        "mint": mint,
+        "owner": owner,
+        "holdings": holdings,
+        "decimals": decimals,
+        "price": price,
+        "usdValue": holdings * price,
+        "poolLiquidityUsd": pool_liquidity,
+        "tradeable": tradeable,
+        "graduated": graduated,
+        "notes": notes,
+    }
+
+
+class PullLiquidityRequest(BaseModel):
+    token: str
+    userPublicKey: str
+    mint: str
+    slippageBps: int = 300
+
+@api_router.post("/treasury/pull-liquidity")
+async def pull_liquidity(req: PullLiquidityRequest):
+    """Build a Jupiter mint→SOL swap for the entire balance of `mint` held by `userPublicKey`.
+    This is what 'pull liquidity' actually means for tokens you don't own the AMM pool of —
+    you sell your bag back through the available routes (bonding curve, Raydium, Orca, etc.)."""
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not req.mint or len(req.mint) < 32:
+        raise HTTPException(status_code=400, detail="Invalid mint")
+    if not req.userPublicKey or len(req.userPublicKey) < 32:
+        raise HTTPException(status_code=400, detail="Invalid userPublicKey")
+
+    bal = await get_solana_balance(req.userPublicKey)
+    if not bal.get("ok"):
+        return {"ok": False, "error": bal.get("error", "balance fetch failed")}
+    info = next((t for t in (bal.get("tokens") or []) if t.get("mint") == req.mint), None)
+    if not info or float(info.get("amount") or 0) <= 0:
+        return {"ok": False, "error": "Wallet holds 0 of this mint — nothing to pull"}
+
+    decimals = int(info.get("decimals") or 0)
+    amount_ui = float(info["amount"])
+    raw_amount = int(round(amount_ui * (10 ** decimals)))
+    if raw_amount <= 0:
+        return {"ok": False, "error": "Raw amount resolved to 0"}
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as ch:
+            qr = await ch.get(
+                "https://lite-api.jup.ag/swap/v1/quote",
+                params={
+                    "inputMint": req.mint,
+                    "outputMint": SOL_MINT,
+                    "amount": raw_amount,
+                    "slippageBps": req.slippageBps,
+                    "onlyDirectRoutes": "false",
+                },
+            )
+            if qr.status_code != 200:
+                return {"ok": False, "error": f"Jupiter quote failed: {qr.status_code} {qr.text[:200]}"}
+            quote = qr.json()
+            out_lamports = int(quote.get("outAmount") or 0)
+            price_impact = float(quote.get("priceImpactPct") or 0)
+
+            tr = await ch.post(
+                "https://lite-api.jup.ag/swap/v1/swap",
+                json={
+                    "quoteResponse": quote,
+                    "userPublicKey": req.userPublicKey,
+                    "wrapAndUnwrapSol": True,
+                    "prioritizationFeeLamports": "auto",
+                },
+            )
+            if tr.status_code != 200:
+                return {"ok": False, "error": f"Jupiter swap-tx failed: {tr.status_code} {tr.text[:200]}"}
+
+            return {
+                "ok": True,
+                "swapTransaction": tr.json().get("swapTransaction"),
+                "inAmount": amount_ui,
+                "inAmountRaw": raw_amount,
+                "decimals": decimals,
+                "outLamports": out_lamports,
+                "outSol": out_lamports / 1_000_000_000,
+                "priceImpactPct": price_impact,
+            }
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Jupiter timeout"}
+    except Exception as e:
+        logger.error(f"pull_liquidity error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+class PullRecordRequest(BaseModel):
+    token: str
+    signature: str
+    owner: str
+    mint: str
+    inAmount: float
+    outSol: float
+
+@api_router.post("/treasury/pull-record")
+async def pull_record(req: PullRecordRequest):
+    if not verify_recovery_token(req.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    doc = {
+        "kind": "pull_liquidity",
+        "signature": req.signature,
+        "owner": req.owner,
+        "mint": req.mint,
+        "inAmount": float(req.inAmount),
+        "outSol": float(req.outSol),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.pull_history.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "record": doc}
+
+@api_router.get("/treasury/pull-history")
+async def pull_history(token: str, limit: int = 20):
+    if not verify_recovery_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    cursor = db.pull_history.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    pipeline = [{"$group": {"_id": None, "totalOutSol": {"$sum": "$outSol"}, "count": {"$sum": 1}}}]
+    agg = await db.pull_history.aggregate(pipeline).to_list(length=1)
+    total_sol = float(agg[0]["totalOutSol"]) if agg else 0.0
+    count = int(agg[0]["count"]) if agg else 0
+    return {"ok": True, "items": items, "totalOutSol": total_sol, "count": count}
+
+# ── Earnings Destinations (multi-chain routing) ──────────────────────────────
+EARNINGS_DESTINATIONS = [
+    {
+        "chain": "solana",
+        "symbol": "SOL",
+        "address": "HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb",
+        "label": "YabbAI Earnings · SOL",
+        "explorer": "https://solscan.io/account/HKjCGdas7CVkSwQHi6Bhckj2U2P8rtTyMbikdY5pkXcb",
+        "signable_from_phantom": True,
+        "coingecko_id": "solana",
+    },
+    {
+        "chain": "ethereum",
+        "symbol": "ETH",
+        "address": "0xB1Ec32c1cB61a276b273EB7988ABcB9Ee49b1357",
+        "label": "YabbAI Earnings · ETH",
+        "explorer": "https://etherscan.io/address/0xB1Ec32c1cB61a276b273EB7988ABcB9Ee49b1357",
+        "signable_from_phantom": False,
+        "coingecko_id": "ethereum",
+    },
+    {
+        "chain": "bitcoin",
+        "symbol": "BTC",
+        "address": "bc1qcgzn8l97py3j6jae4e6qycslaz7ttdv9qxztxk",
+        "label": "YabbAI Earnings · BTC",
+        "explorer": "https://mempool.space/address/bc1qcgzn8l97py3j6jae4e6qycslaz7ttdv9qxztxk",
+        "signable_from_phantom": False,
+        "coingecko_id": "bitcoin",
+    },
+    {
+        "chain": "sui",
+        "symbol": "SUI",
+        "address": "0x6c20356124b651dc22490772664130558c19654e5d7d8a5606acac3f7faa71bd",
+        "label": "YabbAI Earnings · SUI",
+        "explorer": "https://suiscan.xyz/mainnet/account/0x6c20356124b651dc22490772664130558c19654e5d7d8a5606acac3f7faa71bd",
+        "signable_from_phantom": False,
+        "coingecko_id": "sui",
+    },
+]
+
+async def _fetch_sol_balance(client_h: httpx.AsyncClient, address: str):
+    r = await client_h.post(SOLANA_RPC, json={
+        "jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [address]
+    }, headers={"Content-Type": "application/json"})
+    lamports = (r.json() or {}).get("result", {}).get("value", 0)
+    return lamports / 1_000_000_000
+
+async def _fetch_eth_balance(client_h: httpx.AsyncClient, address: str):
+    # Use public Ankr endpoint (no key, rate-limited but fine for read-only display)
+    r = await client_h.post("https://rpc.ankr.com/eth", json={
+        "jsonrpc": "2.0", "id": 1, "method": "eth_getBalance", "params": [address, "latest"]
+    })
+    res = (r.json() or {}).get("result", "0x0")
+    try:
+        wei = int(res, 16)
+    except Exception:
+        wei = 0
+    return wei / 1e18
+
+async def _fetch_btc_balance(client_h: httpx.AsyncClient, address: str):
+    # mempool.space public API
+    r = await client_h.get(f"https://mempool.space/api/address/{address}")
+    if r.status_code != 200:
+        return 0.0
+    d = r.json()
+    funded = d.get("chain_stats", {}).get("funded_txo_sum", 0)
+    spent = d.get("chain_stats", {}).get("spent_txo_sum", 0)
+    sats = funded - spent
+    return sats / 1e8
+
+async def _fetch_sui_balance(client_h: httpx.AsyncClient, address: str):
+    r = await client_h.post("https://fullnode.mainnet.sui.io", json={
+        "jsonrpc": "2.0", "id": 1, "method": "suix_getBalance",
+        "params": [address, "0x2::sui::SUI"]
+    })
+    d = (r.json() or {}).get("result", {})
+    total = d.get("totalBalance", "0")
+    try:
+        mist = int(total)
+    except Exception:
+        mist = 0
+    return mist / 1e9  # SUI has 9 decimals
+
+async def _fetch_usd_prices(client_h: httpx.AsyncClient, ids: list[str]):
+    cached = cache_get(f"cg:{','.join(sorted(ids))}")
+    if cached is not None:
+        return cached
+    try:
+        r = await client_h.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": ",".join(ids), "vs_currencies": "usd"},
+            timeout=8.0,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            out = {k: float(v.get("usd", 0)) for k, v in data.items()}
+            cache_set(f"cg:{','.join(sorted(ids))}", out)
+            return out
+    except Exception as e:
+        logger.warning(f"coingecko fetch failed: {e}")
+    return {}
+
+@api_router.get("/earnings/destinations")
+async def earnings_destinations():
+    """Return all configured earnings destinations with live balances + USD value."""
+    cached = cache_get("earnings:dests")
+    if cached is not None:
+        return cached
+
+    prices = {}
+    enriched = []
+    async with httpx.AsyncClient(timeout=10.0) as ch:
+        prices = await _fetch_usd_prices(ch, [d["coingecko_id"] for d in EARNINGS_DESTINATIONS])
+        for d in EARNINGS_DESTINATIONS:
+            bal = 0.0
+            err = None
+            try:
+                if d["chain"] == "solana":
+                    bal = await _fetch_sol_balance(ch, d["address"])
+                elif d["chain"] == "ethereum":
+                    bal = await _fetch_eth_balance(ch, d["address"])
+                elif d["chain"] == "bitcoin":
+                    bal = await _fetch_btc_balance(ch, d["address"])
+                elif d["chain"] == "sui":
+                    bal = await _fetch_sui_balance(ch, d["address"])
+            except Exception as e:
+                err = str(e)
+                logger.warning(f"balance fetch failed for {d['chain']}: {e}")
+            price = float(prices.get(d["coingecko_id"], 0) or 0)
+            enriched.append({
+                **d,
+                "balance": bal,
+                "usdPrice": price,
+                "usdValue": bal * price,
+                "error": err,
+                "fetchedAt": datetime.now(timezone.utc).isoformat(),
+            })
+    out = {
+        "ok": True,
+        "destinations": enriched,
+        "totalUsd": sum(x["usdValue"] for x in enriched),
+    }
+    cache_set("earnings:dests", out)
+    return out
+
+class FunnelQuoteRequest(BaseModel):
+    fromOwner: str
+    amountSol: Optional[float] = None  # None == max
+
+@api_router.post("/earnings/sol-funnel-quote")
+async def sol_funnel_quote(req: FunnelQuoteRequest):
+    """Compute exactly how much SOL can be funneled from `fromOwner` to the SOL earnings wallet.
+    Reserves rent + fee buffer when amount=None (max)."""
+    if not req.fromOwner or len(req.fromOwner) < 32:
+        raise HTTPException(status_code=400, detail="Invalid fromOwner")
+    bal = await get_solana_balance(req.fromOwner)
+    if not bal.get("ok"):
+        return {"ok": False, "error": "balance fetch failed"}
+    sol = float(bal.get("sol") or 0)
+    FEE_BUFFER = 0.000005 + 0.001  # tx fee + rent buffer
+    if req.amountSol is None:
+        amount = max(0.0, sol - FEE_BUFFER)
+    else:
+        amount = float(req.amountSol)
+    if amount <= 0:
+        return {"ok": False, "error": "Insufficient balance after fee/rent buffer", "available": sol}
+    sol_dest = next((d for d in EARNINGS_DESTINATIONS if d["chain"] == "solana"), None)
+    return {
+        "ok": True,
+        "fromOwner": req.fromOwner,
+        "destination": sol_dest["address"] if sol_dest else None,
+        "amountSol": amount,
+        "available": sol,
+        "feeBuffer": FEE_BUFFER,
+    }
+
+class EarningsRecordRequest(BaseModel):
+    signature: str
+    sourcePage: str  # 'basham' | 'mission' | 'side-hustle' | 'agent' | 'wallet' | 'manual'
+    chain: str       # 'solana'
+    amount: float
+    fromOwner: str
+    destination: str
+    note: Optional[str] = None
+
+@api_router.post("/earnings/record")
+async def earnings_record(req: EarningsRecordRequest):
+    """Persist a completed funnel transfer (any source page can call this)."""
+    doc = {
+        "signature": req.signature,
+        "sourcePage": req.sourcePage,
+        "chain": req.chain,
+        "amount": float(req.amount),
+        "fromOwner": req.fromOwner,
+        "destination": req.destination,
+        "note": req.note,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.earnings_history.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "record": doc}
+
+@api_router.get("/earnings/history")
+async def earnings_history(limit: int = 50, sourcePage: Optional[str] = None):
+    q = {}
+    if sourcePage:
+        q["sourcePage"] = sourcePage
+    cursor = db.earnings_history.find(q, {"_id": 0}).sort("createdAt", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    # Aggregate by source page
+    pipeline = [
+        {"$group": {"_id": "$sourcePage", "totalSol": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+        {"$sort": {"totalSol": -1}},
+    ]
+    agg = await db.earnings_history.aggregate(pipeline).to_list(length=20)
+    by_source = [{"sourcePage": r["_id"], "totalSol": float(r["totalSol"]), "count": int(r["count"])} for r in agg]
+    return {"ok": True, "items": items, "bySource": by_source}
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 

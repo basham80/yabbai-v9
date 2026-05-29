@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import EarningsRouter from '../components/EarningsRouter';
 
 const MISSION_TYPES = [
   'Liquidity Mining Protocol',
@@ -230,6 +231,8 @@ export default function Mission() {
           </div>
         </div>
       </div>
+
+      <EarningsRouter sourcePage="mission" title="Funnel mission yields → multi-chain wallets" />
     </div>
   );
 }

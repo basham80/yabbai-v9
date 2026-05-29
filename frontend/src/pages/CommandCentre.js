@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
+import EarningsRouter from '../components/EarningsRouter';
 
 const PHASES = [
   { key: 'PUMP', label: 'Pump', idx: 0 },
@@ -353,6 +354,7 @@ export default function CommandCentre() {
 
       {/* Quick actions */}
       <FeeRevenueWidget />
+      <EarningsRouter sourcePage="command" title="Earnings Router · all sources → multi-chain wallets" />
       <div className="card fade-in-4">
         <p className="section-label" style={{ marginBottom: 14 }}>QUICK ACTIONS</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>

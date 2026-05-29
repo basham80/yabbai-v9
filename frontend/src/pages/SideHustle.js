@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import EarningsRouter from '../components/EarningsRouter';
 
 const SIGNAL_FEED = [
   { id: 1, biz: 'ACE Plumbing', owner: 'Mark H.', signal: 'Website not mobile optimised, 3★ reviews, no automation', priority: 1, val: 28000, status: 'contacted' },
@@ -160,6 +161,8 @@ export default function SideHustle() {
           </div>
         </div>
       )}
+
+      <EarningsRouter sourcePage="side-hustle" title="Funnel Yield Harvester / lead revenue → multi-chain wallets" />
     </div>
   );
 }

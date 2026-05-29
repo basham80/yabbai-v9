@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import EarningsRouter from '../components/EarningsRouter';
 
 const PAIN_POINTS = [
   { id: 1, text: 'Cashflow inconsistency — no reliable revenue stream', severity: 'high' },
@@ -262,6 +263,8 @@ Multiplier: 2.8x in 12 months`;
           ))}
         </div>
       )}
+
+      <EarningsRouter sourcePage="basham" title="Funnel Gold Harvester earnings → multi-chain wallets" />
     </div>
   );
 }

@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  background: #050808;
+  min-height: 100%;
+}
+
+body {
+  background-image:
+    radial-gradient(ellipse 1200px 600px at 80% -10%, rgba(107,47,255,0.16), transparent 60%),
+    radial-gradient(ellipse 900px 500px at 0% 100%, rgba(0,240,255,0.10), transparent 60%),
+    linear-gradient(180deg, #050808 0%, #060c10 100%);
+  background-attachment: fixed;
+}
+
+/* Cyber grid background overlay */
+.cyber-grid {
+  background-image:
+    linear-gradient(rgba(0,240,255,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,240,255,0.06) 1px, transparent 1px);
+  background-size: 56px 56px;
+  background-position: -1px -1px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+
+/* Premium card surface */
+.surface {
+  background: linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.005) 100%);
+  border: 1px solid rgba(0,240,255,0.12);
+  border-radius: 6px;
+  backdrop-filter: blur(8px);
+  position: relative;
+  overflow: hidden;
+}
+.surface::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(0,240,255,0.06) 0%, transparent 40%);
+  pointer-events: none;
+}
+
+.surface-purple { border-color: rgba(107,47,255,0.25); }
+.surface-gold { border-color: rgba(247,183,49,0.25); }
+
+/* Sharp cyber buttons */
+.btn-cyber {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(0,240,255,0.02));
+  border: 1px solid rgba(0,240,255,0.4);
+  color: #00F0FF;
+  cursor: pointer;
+  transition: all 200ms ease;
+  position: relative;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+.btn-cyber:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0,240,255,0.2), rgba(0,240,255,0.05));
+  box-shadow: 0 0 0 1px rgba(0,240,255,0.6), 0 0 28px rgba(0,240,255,0.35);
+  transform: translateY(-1px);
+}
+.btn-cyber:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-purple {
+  background: linear-gradient(135deg, rgba(107,47,255,0.18), rgba(107,47,255,0.04));
+  border-color: rgba(107,47,255,0.5);
+  color: #c9b6ff;
+}
+.btn-purple:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(107,47,255,0.32), rgba(107,47,255,0.1));
+  box-shadow: 0 0 0 1px rgba(107,47,255,0.6), 0 0 32px rgba(107,47,255,0.4);
+}
+
+.btn-gold {
+  background: linear-gradient(135deg, rgba(247,183,49,0.16), rgba(247,183,49,0.04));
+  border-color: rgba(247,183,49,0.5);
+  color: #F7B731;
+}
+.btn-gold:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(247,183,49,0.3), rgba(247,183,49,0.08));
+  box-shadow: 0 0 0 1px rgba(247,183,49,0.6), 0 0 28px rgba(247,183,49,0.4);
+}
+
+/* Section header */
+.section-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(0,240,255,0.7);
+}
+
+.display-h {
+  font-family: 'Orbitron', system-ui, sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+}
+
+/* Input */
+.cyber-input {
+  width: 100%;
+  background: rgba(5,8,8,0.6);
+  border: 1px solid rgba(0,240,255,0.2);
+  color: #e8f5ff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  padding: 12px 14px;
+  outline: none;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.cyber-input:focus {
+  border-color: rgba(0,240,255,0.6);
+  box-shadow: 0 0 0 3px rgba(0,240,255,0.1);
+}
+
+/* Live dot */
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #14F195;
+  box-shadow: 0 0 8px #14F195;
+  animation: pulseSoft 1.6s ease-in-out infinite;
+}
+.live-dot.cyan { background: #00F0FF; box-shadow: 0 0 8px #00F0FF; }
+.live-dot.gold { background: #F7B731; box-shadow: 0 0 8px #F7B731; }
+.live-dot.danger { background: #ff4565; box-shadow: 0 0 8px #ff4565; }
+
+/* Scan line overlay */
+.scan-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(0,240,255,0.05) 50%, transparent 100%);
+  pointer-events: none;
+  animation: scanLine 6s linear infinite;
+}
+
+@keyframes pulseSoft { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes scanLine { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #050808; }
+::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.18); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,240,255,0.35); }
+
+/* Typewriter cursor */
+.typing::after { content: '▊'; color: #00F0FF; animation: pulseSoft 1s steps(1) infinite; }
+
+/* Grade badges */
+.grade {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+}
+.grade-S { color: #F7B731; background: rgba(247,183,49,0.08); box-shadow: 0 0 16px rgba(247,183,49,0.3); }
+.grade-A { color: #00F0FF; background: rgba(0,240,255,0.08); }
+.grade-B { color: #6B2FFF; background: rgba(107,47,255,0.08); }
+.grade-WATCH { color: #7c98a8; background: rgba(124,152,168,0.06); }
