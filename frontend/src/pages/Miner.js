@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import EarningsRouter from '../components/EarningsRouter';
+import KaspaPoolBridge from '../components/KaspaPoolBridge';
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL;
 
@@ -286,6 +287,8 @@ export default function Miner() {
           </div>
         )}
       </div>
+
+      <KaspaPoolBridge walletPubkey={wallet} />
 
       <EarningsRouter sourcePage="miner" title="Funnel miner earnings → multi-chain wallets" />
     </div>

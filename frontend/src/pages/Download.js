@@ -67,6 +67,28 @@ export default function Download() {
           </Link>
         </Card>
 
+        {/* V9.1 Real Mining Desktop Bundle */}
+        <Card icon="⛏" label="V9.1 MINER" sub="Real Kaspa GPU mining · Python desktop" status="live" testid="card-v9-miner">
+          <ul style={{ fontSize: 12, color: '#e8f0ff', lineHeight: 1.7, marginLeft: 16, marginBottom: 12 }}>
+            <li><b style={{ color: '#14F195' }}>Real Kaspa mainnet mining</b> via lolMiner</li>
+            <li>WoolyPooly pool integration (direct KAS payouts)</li>
+            <li>Live earnings push to web dashboard</li>
+            <li>Self-improvement AI brain · Shift+Click everywhere</li>
+            <li>Treasury manager + immune-system guard</li>
+          </ul>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a href="/downloads/yabbai_v9_web3.zip" download className="btn btn-green" style={{ textDecoration: 'none' }} data-testid="download-v9-zip">
+              ⬇ DOWNLOAD V9.1 (97 KB)
+            </a>
+            <Link to="/miner" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="open-miner-link">
+              OPEN BRIDGE →
+            </Link>
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#7c98c4', marginTop: 8 }}>
+            Requires Python 3.10+, lolMiner.exe (free), NVIDIA/AMD GPU
+          </div>
+        </Card>
+
         {/* Install PWA */}
         <Card icon="▸" label={platform === 'android' ? 'ANDROID PWA' : platform === 'ios' ? 'iOS PWA' : 'INSTALL'}
               sub="Install to home screen — works offline" status="pwa" testid="card-install">
@@ -92,8 +114,44 @@ export default function Download() {
             </div>
           )}
         </Card>
+      </div>
+
+      {/* V9.1 Setup Instructions */}
+      <div className="card fade-in-4" style={{ marginBottom: 24 }} data-testid="v9-setup">
+        <p className="section-label" style={{ marginBottom: 12 }}>V9.1 MINER · 60-SECOND SETUP</p>
+        <p style={{ color: '#7c98c4', fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+          The v9.1 bundle launches a real GPU miner against Kaspa mainnet and streams hashrate + payouts back to this dashboard.
+          KAS coins go straight to YOUR wallet (no middleman).
+        </p>
+        <div style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: '#14F195',
+          background: 'rgba(8,16,36,0.6)', padding: 14, borderRadius: 6,
+          border: '1px solid rgba(20,241,149,0.2)', whiteSpace: 'pre-wrap', overflow: 'auto',
+        }}>
+{`# 1) Extract the downloaded zip
+unzip yabbai_v9_web3.zip && cd yabbai_v9
+
+# 2) Install Python deps
+pip install -r requirements.txt
+
+# 3) Download lolMiner from https://github.com/Lolliedieb/lolMiner-releases
+#    Place lolMiner.exe in C:\\lolMiner\\  (or any common path - auto-detected)
+
+# 4) Run YABBAI v9.1
+python run.py
+
+# Browser opens at http://localhost:8765
+# Enter your Kaspa wallet (kaspa:qz0…), click START
+# Open https://yabbai-mainnet-live.preview.emergentagent.com/miner
+# Paste the SAME Kaspa address → BIND → live stats appear here`}
+        </div>
+        <p style={{ color: '#F5A623', fontSize: 11, marginTop: 12, fontFamily: 'var(--font-mono)' }}>
+          ⚠ The local miner uses your GPU. Expect 200-400W draw on a desktop card. Monitor temps.
+        </p>
+      </div>
 
         {/* Android APK */}
+      <div className="card fade-in-4" style={{ marginBottom: 24 }}>
         <Card icon="📱" label="ANDROID APK" sub="Real signed APK · build locally" status="beta" testid="card-apk">
           <ul style={{ fontSize: 12, color: '#e8f0ff', lineHeight: 1.7, marginLeft: 16, marginBottom: 12 }}>
             <li>Trusted Web Activity (TWA) wrapper</li>
@@ -101,7 +159,7 @@ export default function Download() {
             <li>WASM miner + WebGL2 GPU runs natively</li>
             <li>Requires Android Studio + JDK 17 to build</li>
           </ul>
-          <a href="/android-build" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="apk-build-instructions">
+          <a href="#android-build" className="btn btn-amber" style={{ textDecoration: 'none' }} data-testid="apk-build-instructions">
             ▸ BUILD INSTRUCTIONS
           </a>
         </Card>

@@ -1716,6 +1716,133 @@ async def miner_leaderboard(limit: int = 10):
         for r in rows if r["_id"]
     ]}
 
+# ── Kaspa Pool Bridge (WoolyPooly real-mining stats) ─────────────────────────
+# Connects the local desktop miner (v9.1 bundle) to the web dashboard so users
+# see their real on-chain Kaspa earnings here.
+
+class KaspaWalletRegisterRequest(BaseModel):
+    walletPubkey: Optional[str] = None  # Solana wallet for binding
+    kaspaAddress: str
+    label: Optional[str] = None
+
+@api_router.post("/pool/kaspa/register")
+async def pool_kaspa_register(req: KaspaWalletRegisterRequest):
+    if not req.kaspaAddress or not req.kaspaAddress.startswith("kaspa:"):
+        raise HTTPException(status_code=400, detail="Kaspa address must start with 'kaspa:'")
+    doc = {
+        "walletPubkey": req.walletPubkey,
+        "kaspaAddress": req.kaspaAddress,
+        "label": req.label,
+        "registeredAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.pool_kaspa_wallets.update_one(
+        {"kaspaAddress": req.kaspaAddress}, {"$set": doc}, upsert=True
+    )
+    return {"ok": True, "kaspaAddress": req.kaspaAddress}
+
+@api_router.get("/pool/kaspa/stats")
+async def pool_kaspa_stats(address: str):
+    """Live wallet stats from WoolyPooly Kaspa pool."""
+    if not address or not address.startswith("kaspa:"):
+        raise HTTPException(status_code=400, detail="Invalid Kaspa address")
+    cached = cache_get(f"kaspa:{address}")
+    if cached is not None:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            r = await ch.get(f"https://api.woolypooly.com/api/v1/wallet/kaspa/{address}",
+                             headers={"User-Agent": "YABBAI-Web/1.0"})
+            if r.status_code != 200:
+                return {"ok": False, "error": f"Pool returned {r.status_code}"}
+            data = r.json()
+            out = {
+                "ok": True,
+                "address": address,
+                "pool": "woolypooly",
+                "hashrate": float(data.get("hashrate", 0) or 0),
+                "hashrateMh": round(float(data.get("hashrate", 0) or 0) / 1_000_000, 4),
+                "balance": float(data.get("balance", 0) or 0),
+                "paid": float(data.get("paid", 0) or 0),
+                "workers": data.get("workers", []),
+                "fetchedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            cache_set(f"kaspa:{address}", out)
+            return out
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "WoolyPooly timeout"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/pool/kaspa/payments")
+async def pool_kaspa_payments(address: str, limit: int = 20):
+    if not address or not address.startswith("kaspa:"):
+        raise HTTPException(status_code=400, detail="Invalid Kaspa address")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ch:
+            r = await ch.get(f"https://api.woolypooly.com/api/v1/wallet/kaspa/{address}/payments",
+                             headers={"User-Agent": "YABBAI-Web/1.0"})
+            if r.status_code != 200:
+                return {"ok": False, "error": f"Pool returned {r.status_code}"}
+            data = r.json()
+            items = []
+            for p in (data.get("payments") or [])[:limit]:
+                items.append({
+                    "amountKas": float(p.get("amount") or 0),
+                    "timestamp": p.get("timestamp"),
+                    "txid": p.get("txid", ""),
+                })
+            return {"ok": True, "address": address, "payments": items}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api_router.get("/pool/kaspa/recommend")
+async def pool_kaspa_recommend():
+    return {
+        "ok": True,
+        "recommended": {
+            "name": "WoolyPooly",
+            "url": "stratum+tcp://pool.woolypooly.com:3112",
+            "note": "Stable, popular Kaspa pool. Default for the v9.1 miner bundle.",
+        },
+        "alternatives": [
+            {"name": "F2Pool", "url": "stratum+tcp://kas.f2pool.com:3333"},
+            {"name": "HeroMiners", "url": "stratum+tcp://kas.kryptex.network:7777"},
+        ],
+    }
+
+class MiningSessionReport(BaseModel):
+    """Sent by the v9.1 local miner over HTTPS every ~60s while it runs."""
+    kaspaAddress: str
+    hashrate: float       # H/s reported by lolMiner
+    minerType: str = "lolminer"
+    pool: str = "woolypooly"
+    durationSec: int = 60
+    walletPubkey: Optional[str] = None
+    hostFingerprint: Optional[str] = None  # opaque id from the desktop client
+
+@api_router.post("/pool/kaspa/session-report")
+async def pool_kaspa_session_report(req: MiningSessionReport):
+    doc = req.model_dump()
+    doc["ts"] = datetime.now(timezone.utc).isoformat()
+    await db.kaspa_sessions.insert_one(doc)
+    return {"ok": True}
+
+@api_router.get("/pool/kaspa/sessions")
+async def pool_kaspa_sessions(address: str, limit: int = 30):
+    cursor = db.kaspa_sessions.find({"kaspaAddress": address}, {"_id": 0}).sort("ts", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    pipeline = [
+        {"$match": {"kaspaAddress": address}},
+        {"$group": {"_id": None, "totalSec": {"$sum": "$durationSec"},
+                    "avgHashrate": {"$avg": "$hashrate"}, "reports": {"$sum": 1}}},
+    ]
+    agg = await db.kaspa_sessions.aggregate(pipeline).to_list(length=1)
+    return {"ok": True, "items": items, "summary": {
+        "totalSec": int(agg[0]["totalSec"]) if agg else 0,
+        "avgHashrate": float(agg[0]["avgHashrate"]) if agg else 0.0,
+        "reports": int(agg[0]["reports"]) if agg else 0,
+    }}
+
 # ── Register all API routes ──────────────────────────────────────────────────
 app.include_router(api_router)
 
