@@ -159,11 +159,14 @@ export default function CommandCentre() {
     const TREASURY = '7dzgCA8G55VytZ8PS1b99rbbctzCgJbnEoBEYBnn15YR';
     const YABBAI = 'HbtUQfmgkasRwSmqG1C2xSPNkfdyZ5jUrnw6vPCGpump';
     const load = async () => {
+      const recoveryTok = sessionStorage.getItem('yabbai_recovery_token');
       const [tok, bal, fee, hist] = await Promise.all([
         fetch(`${base}/api/token-live-stats?mint=${YABBAI}`).then(r => r.json()).catch(() => null),
         fetch(`${base}/api/solana-balance?owner=${TREASURY}`).then(r => r.json()).catch(() => null),
         fetch(`${base}/api/fee-revenue?days=30`).then(r => r.json()).catch(() => null),
-        fetch(`${base}/api/recovery/history?token=${encodeURIComponent(sessionStorage.getItem('yabbai_recovery_token') || '')}&limit=20`).then(r => r.ok ? r.json() : null).catch(() => null),
+        recoveryTok
+          ? fetch(`${base}/api/recovery/history?token=${encodeURIComponent(recoveryTok)}&limit=20`).then(r => r.ok ? r.json() : null).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setStats((s) => ({
         ...s,

@@ -13,6 +13,21 @@ Build complete YabbAI-Brain production app from "profitr-main (2).zip":
 - **Frontend**: React + CRACO via `yarn start` on port 3000 (supervisor)
 - **External APIs**: Jupiter v3 (lite-api.jup.ag), Solana mainnet RPC, Phantom (window.solana)
 
+## Implemented (2026-02-13 — second batch)
+### Mission Engine + Quick Actions + Miner + PWA + Android TWA
+- `POST /api/mission/start` — armed-state mission, capitalSol=0 starts armed (no fake yield)
+- `POST /api/mission/{id}/tick` — only produces yield when capital > 0; APY formula locked `risk*8+200` to `risk*15+400`
+- `POST /api/mission/{id}/deposit` — activates mission after real Phantom-signed SOL deposit (mainnet-ready)
+- `POST /api/mission/{id}/stop`, `GET /api/mission/list` — lifecycle + summary
+- `POST /api/actions/harvest-yields`, `/api/actions/sync-wallets`, `/api/actions/run-audit` — real Quick Actions
+- `POST /api/miner/heartbeat`, `GET /api/miner/leaderboard` — public mining stats
+- Frontend `/miner` page — WASM CPU miner (8–32 threads slider, 60–130W throttle, real Web Workers + crypto.subtle.SHA-256). Experimental WebGL2 GPU toggle. Phantom-bound earnings. Leaderboard.
+- Frontend `/download` page — PWA install button (beforeinstallprompt), Android TWA build instructions, Tauri desktop wrapper recipe
+- PWA: `/manifest.json` + `/service-worker.js` registered; site installable on Android home screen
+- Android TWA skeleton in `/app/android/` (twa-manifest.json, assetlinks.json, README, .gitignore)
+- Deploy Mission button on `/mission` is now real (creates armed mission, auto-ticks every 10s)
+- Command Centre Quick Actions wired (Harvest / Sync / Audit / Deploy / Open Miner / Download)
+
 ## Implemented (2026-02-13)
 ### Buy-and-Burn + Dust Sweep (P0 deferred from previous session — now DONE)
 - `POST /api/treasury/buy-and-burn` — Jupiter SOL→YABB swap tx + incinerator route
