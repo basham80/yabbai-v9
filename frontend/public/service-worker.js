@@ -1,5 +1,5 @@
 // YabbAI Service Worker — minimal offline shell + asset cache
-const CACHE = 'yabbai-shell-v1';
+const CACHE = 'yabbai-shell-v2';
 const ASSETS = ['/', '/index.html', '/manifest.json', '/miner-worker.js'];
 
 self.addEventListener('install', (e) => {
@@ -12,11 +12,13 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  // Network-first for API calls; cache-first for app shell
+  // NEVER intercept API calls — they may be long-running (LLM streams), have
+  // streaming responses, or POST bodies. Let the browser handle them natively.
   if (url.pathname.startsWith('/api/')) {
-    e.respondWith(fetch(e.request).catch(() => new Response(JSON.stringify({ ok: false, offline: true }), { headers: { 'Content-Type': 'application/json' } })));
     return;
   }
+  // Only intercept same-origin GETs for static shell
+  if (e.request.method !== 'GET') return;
   e.respondWith(
     caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
       const copy = res.clone();

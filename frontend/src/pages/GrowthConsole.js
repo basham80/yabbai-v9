@@ -82,10 +82,18 @@ export default function GrowthConsole() {
     setActiveCycle(null);
     try {
       const r = await fetch(`${BACKEND}/api/agent/autonomous-cycle`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mint: GLORP_MINT }),
+        cache: 'no-store',
       });
-      const d = await r.json();
+      const text = await r.text();
+      let d;
+      try { d = JSON.parse(text); }
+      catch (parseErr) {
+        toast.error(`Bad response (HTTP ${r.status}): ${text.slice(0, 120)}`);
+        return;
+      }
       if (d.ok) {
         setActiveCycle(d.cycle);
         toast.success(`Cycle complete · ${d.cycle.successCount}/${d.cycle.stepCount} steps`);
@@ -94,7 +102,7 @@ export default function GrowthConsole() {
         toast.error(d.error || 'Cycle failed');
       }
     } catch (e) {
-      toast.error(e.message);
+      toast.error(e.message || 'Network error');
     } finally {
       setCycleRunning(false);
     }
@@ -104,10 +112,18 @@ export default function GrowthConsole() {
     setGenerating(true);
     try {
       const r = await fetch(`${BACKEND}/api/growth/marketing`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mint: GLORP_MINT, tone, overview }),
+        cache: 'no-store',
       });
-      const d = await r.json();
+      const text = await r.text();
+      let d;
+      try { d = JSON.parse(text); }
+      catch (parseErr) {
+        toast.error(`Bad response (HTTP ${r.status}): ${text.slice(0, 120)}`);
+        return;
+      }
       if (d.ok) {
         setMarketing(d);
         toast.success(`${tone.toUpperCase()} marketing pack ready`);
@@ -115,7 +131,7 @@ export default function GrowthConsole() {
         toast.error(d.error || 'Generation failed');
       }
     } catch (e) {
-      toast.error(e.message);
+      toast.error(e.message || 'Network error');
     } finally {
       setGenerating(false);
     }
